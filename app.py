@@ -5,7 +5,6 @@ import asyncio
 import edge_tts
 import time
 import os
-import sqlite3
 import base64
 from datetime import datetime
 from google import genai
@@ -20,27 +19,53 @@ DATA_DIR = "library_data"
 PDF_DIR = os.path.join(DATA_DIR, "pending_papers")
 AUDIO_DIR = os.path.join(DATA_DIR, "audios")
 MUSIC_DIR = os.path.join(DATA_DIR, "music")
-DB_PATH = os.path.join(DATA_DIR, "library.db")
+INDEX_FILE = os.path.join(DATA_DIR, "library_index.json")
 
-for d in [PDF_DIR, AUDIO_DIR, MUSIC_DIR]:
+for d in [DATA_DIR, PDF_DIR, AUDIO_DIR, MUSIC_DIR]:
     os.makedirs(d, exist_ok=True)
 
-# --- BASE DE DATOS SIMPLE ---
-def get_db():
-    conn = sqlite3.connect(DB_PATH, timeout=20.0)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS episodes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
-            date TEXT,
-            pdf_path TEXT,
-            audio_path TEXT,
-            transcript_json TEXT
-        )
-    """)
-    conn.commit()
-    return conn
+# --- ALMACENAMIENTO SEGURO EN JSON (SIN BLOQUEOS DE SQLITE) ---
+def load_episodes() -> list:
+    if not os.path.exists(INDEX_FILE):
+        return []
+    try:
+        with open(INDEX_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_episodes(episodes: list):
+    temp_file = INDEX_FILE + ".tmp"
+    with open(temp_file, "w", encoding="utf-8") as f:
+        json.dump(episodes, f, ensure_ascii=False, indent=2)
+    os.replace(temp_file, INDEX_FILE)
+
+def add_episode_record(title: str, pdf_path: str, audio_path: str, transcript_json: str):
+    episodes = load_episodes()
+    new_ep = {
+        "id": int(time.time() * 1000),
+        "title": title,
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "pdf_path": pdf_path,
+        "audio_path": audio_path,
+        "transcript_json": transcript_json
+    }
+    episodes.insert(0, new_ep)
+    save_episodes(episodes)
+
+def delete_episode_record(ep_id: int):
+    episodes = load_episodes()
+    remaining = []
+    for ep in episodes:
+        if ep["id"] == ep_id:
+            if os.path.exists(ep.get("audio_path", "")):
+                try:
+                    os.remove(ep["audio_path"])
+                except Exception:
+                    pass
+        else:
+            remaining.append(ep)
+    save_episodes(remaining)
 
 # --- MODELOS DE DATOS ---
 class DialogueTurn(BaseModel):
@@ -172,7 +197,7 @@ with tab_papers:
         "Sube uno o varios archivos PDF", 
         type=["pdf"], 
         accept_multiple_files=True, 
-        key="pdf_uploader_clean"
+        key="pdf_uploader_files"
     )
 
     if uploaded_files:
@@ -188,7 +213,6 @@ with tab_papers:
 
     st.divider()
 
-    # Listar los PDFs que están físicamente en la carpeta
     archivos_pdf = [f for f in os.listdir(PDF_DIR) if f.lower().endswith(".pdf")]
 
     col_tit, col_btn_vaciar = st.columns([4, 1.5])
@@ -196,7 +220,7 @@ with tab_papers:
         st.subheader("📚 Artículos Listos para Procesar")
     with col_btn_vaciar:
         if archivos_pdf:
-            if st.button("🗑️ Vaciar Todo el Almacén", key="btn_vaciar_todo"):
+            if st.button("🗑️ Vaciar Todo el Almacén", key="btn_vaciar_todos_pdfs"):
                 for f in archivos_pdf:
                     try:
                         os.remove(os.path.join(PDF_DIR, f))
@@ -206,7 +230,7 @@ with tab_papers:
                 st.rerun()
 
     if not archivos_pdf:
-        st.info("No tienes artículos pendientes. Arrastra tus PDFs arriba para guardarlos.")
+        st.info("No tienes artículos pendientes. Sube tus PDFs arriba para guardarlos.")
     else:
         for nombre_pdf in archivos_pdf:
             ruta_pdf = os.path.join(PDF_DIR, nombre_pdf)
@@ -215,7 +239,7 @@ with tab_papers:
                 with col_info:
                     st.write(f"📄 **{nombre_pdf}**")
                 with col_generar:
-                    if st.button("🎙️ Generar Podcast", key=f"gen_{nombre_pdf}", disabled=not api_key):
+                    if st.button("🎙️ Generar Podcast", key=f"btn_gen_{nombre_pdf}", disabled=not api_key):
                         with open(ruta_pdf, "rb") as f_pdf:
                             pdf_bytes = f_pdf.read()
 
@@ -224,32 +248,24 @@ with tab_papers:
                                 script_obj = generate_script_from_pdf(pdf_bytes, api_key)
 
                             with st.spinner("2/2: Sintetizando voces de Ana y Dani..."):
-                                audio_filename = f"podcast_{int(time.time())}.mp3"
+                                audio_filename = f"podcast_{int(time.time() * 1000)}.mp3"
                                 audio_save_path = os.path.join(AUDIO_DIR, audio_filename)
                                 asyncio.run(create_audio(script_obj.dialogue, audio_save_path))
 
-                            # Guardar en SQLite
-                            conn = get_db()
-                            c = conn.cursor()
-                            c.execute("""
-                                INSERT INTO episodes (title, date, pdf_path, audio_path, transcript_json)
-                                VALUES (?, ?, ?, ?, ?)
-                            """, (
-                                script_obj.title,
-                                datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                ruta_pdf,
-                                audio_save_path,
-                                script_obj.model_dump_json()
-                            ))
-                            conn.commit()
-                            conn.close()
+                            # Guardado inmediato en índice JSON
+                            add_episode_record(
+                                title=script_obj.title,
+                                pdf_path=ruta_pdf,
+                                audio_path=audio_save_path,
+                                transcript_json=script_obj.model_dump_json()
+                            )
 
-                            st.success(f"¡Episodio creado con éxito! Puedes escucharlo en 'Biblioteca de Episodios'.")
+                            st.success(f"¡Episodio '{script_obj.title}' creado! Ve a la 'Biblioteca de Episodios'.")
                             st.audio(audio_save_path, format="audio/mp3")
                         except Exception as e:
                             st.error(f"Error procesando {nombre_pdf}: {e}")
                 with col_borrar:
-                    if st.button("🗑️", key=f"del_{nombre_pdf}"):
+                    if st.button("🗑️️", key=f"btn_del_{nombre_pdf}"):
                         try:
                             os.remove(ruta_pdf)
                         except Exception:
@@ -262,33 +278,27 @@ with tab_papers:
 # ==========================================
 with tab_library:
     st.header("Episodios Generados")
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT id, title, date, pdf_path, audio_path, transcript_json FROM episodes ORDER BY id DESC")
-    episodes = c.fetchall()
-    conn.close()
+    episodes = load_episodes()
 
     if not episodes:
         st.info("Aún no tienes episodios generados en la biblioteca.")
     else:
-        for ep_id, ep_title, ep_date, ep_pdf, ep_audio, ep_json in episodes:
+        for ep in episodes:
+            ep_id = ep["id"]
+            ep_title = ep.get("title", "Sin título")
+            ep_date = ep.get("date", "")
+            ep_pdf = ep.get("pdf_path", "")
+            ep_audio = ep.get("audio_path", "")
+            ep_json = ep.get("transcript_json", "{}")
+
             with st.container():
                 col_head, col_del = st.columns([5, 1])
                 with col_head:
                     st.subheader(ep_title)
                     st.caption(f"Generado el: {ep_date}")
                 with col_del:
-                    if st.button("🗑️ Eliminar", key=f"del_ep_{ep_id}"):
-                        conn = get_db()
-                        c = conn.cursor()
-                        c.execute("DELETE FROM episodes WHERE id = ?", (ep_id,))
-                        conn.commit()
-                        conn.close()
-                        if os.path.exists(ep_audio):
-                            try:
-                                os.remove(ep_audio)
-                            except Exception:
-                                pass
+                    if st.button("🗑️️ Eliminar", key=f"del_ep_{ep_id}"):
+                        delete_episode_record(ep_id)
                         st.warning("Episodio eliminado.")
                         st.rerun()
 
@@ -304,9 +314,12 @@ with tab_library:
                         )
 
                 with st.expander("📄 Ver Transcripción Completa"):
-                    dialogue_data = json.loads(ep_json)
-                    for turn in dialogue_data.get("dialogue", []):
-                        st.markdown(f"**{turn['speaker']}:** {turn['text']}")
+                    try:
+                        dialogue_data = json.loads(ep_json)
+                        for turn in dialogue_data.get("dialogue", []):
+                            st.markdown(f"**{turn['speaker']}:** {turn['text']}")
+                    except Exception:
+                        st.write("Transcripción no disponible.")
 
                 if os.path.exists(ep_pdf):
                     with open(ep_pdf, "rb") as pf:
@@ -326,12 +339,7 @@ with tab_mixer:
     st.header("🎛️ Mezclador de Estudio con Control de Volumen Individual")
     st.write("Ajusta de forma táctil el volumen de la voz y de la música de fondo de manera independiente.")
 
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT id, title, audio_path FROM episodes ORDER BY id DESC")
-    episodes = c.fetchall()
-    conn.close()
-
+    episodes = load_episodes()
     saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.lower().endswith(".mp3")]
 
     if not episodes:
@@ -339,7 +347,7 @@ with tab_mixer:
     elif not saved_tracks:
         st.warning("No hay pistas de música de fondo. Sube alguna en el 'Gestor de Música'.")
     else:
-        ep_dict = {f"[{ep[0]}] {ep[1]}": ep[2] for ep in episodes}
+        ep_dict = {f"[{ep['id']}] {ep['title']}": ep['audio_path'] for ep in episodes}
         selected_ep_label = st.selectbox("1. Selecciona el Episodio:", list(ep_dict.keys()), key="mix_ep")
         selected_track = st.selectbox("2. Selecciona la Música de Fondo:", saved_tracks, key="mix_bgm")
 
