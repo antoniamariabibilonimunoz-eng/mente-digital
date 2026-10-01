@@ -75,7 +75,7 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
 
 def generate_script(pdf_text: str, api_key: str) -> PodcastScript:
     client = genai.Client(api_key=api_key.strip())
-    cleaned = pdf_text[:90000]
+    cleaned = pdf_text[:80000]
     
     prompt = (
         f"{SYSTEM_PROMPT}\n\n"
@@ -87,11 +87,16 @@ def generate_script(pdf_text: str, api_key: str) -> PodcastScript:
         "Devuelve únicamente el bloque JSON válido sin formato markdown ni texto adicional."
     )
 
-    candidate_models = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
+    candidate_models = [
+        "gemini-3.0-pro",
+        "gemini-3.8-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-pro"
+    ]
     last_error = None
 
     for model_name in candidate_models:
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 response = client.models.generate_content(
                     model=model_name,
@@ -113,11 +118,9 @@ def generate_script(pdf_text: str, api_key: str) -> PodcastScript:
                 return PodcastScript(**script_dict)
             except Exception as e:
                 last_error = e
-                if "503" in str(e) or "UNAVAILABLE" in str(e):
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                else:
-                    break
+                time.sleep(3)
+                continue
+
     raise last_error
 
 async def create_audio(dialogue: List[DialogueTurn], output_file: str):
@@ -140,7 +143,7 @@ async def create_audio(dialogue: List[DialogueTurn], output_file: str):
             if os.path.exists(tf):
                 os.remove(tf)
 
-# --- OBTENCIÓN AUTOMÁTICA DE API KEY ---
+# --- RECUPERAR API KEY DESDE SECRETS O ENTORNO ---
 api_key = None
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -151,19 +154,23 @@ except Exception:
 if not api_key:
     api_key = os.getenv("GEMINI_API_KEY")
 
-# --- NAVEGACIÓN PRINCIPAL ---
-tab_generator, tab_library = st.tabs(["🚀 Crear Nuevo Episodio", "📚 Biblioteca de Episodios y Música"])
+# --- INTERFAZ PRINCIPAL ---
+tab_generator, tab_library, tab_music = st.tabs([
+    "🚀 Crear Episodio", 
+    "📻 Biblioteca de Episodios", 
+    "🎵 Gestor de Música"
+])
 
 # ==========================================
-# PESTAÑA 1: GENERADOR
+# PESTAÑA 1: CREAR EPISODIO
 # ==========================================
 with tab_generator:
     st.header("Generador de Podcasts Científicos")
     
     if not api_key:
-        st.error("Falta configurar 'GEMINI_API_KEY' en los Secrets de Streamlit.")
+        st.error("No se detectó 'GEMINI_API_KEY' en los Secrets de Streamlit. Por favor, configúrala en Settings > Secrets.")
     
-    uploaded_pdf = st.file_uploader("Sube el artículo en PDF", type=["pdf"])
+    uploaded_pdf = st.file_uploader("Sube el artículo académico (PDF)", type=["pdf"])
 
     if uploaded_pdf and api_key:
         if st.button("Generar y Guardar en Biblioteca"):
@@ -175,7 +182,7 @@ with tab_generator:
                 f.write(uploaded_pdf.getbuffer())
 
             try:
-                with st.spinner("1/2: Analizando metodología y estructurando diálogo..."):
+                with st.spinner("1/2: Analizando metodología, diseño y estructurando diálogo..."):
                     pdf_text = extract_text_from_pdf(open(pdf_save_path, "rb").read())
                     script_obj = generate_script(pdf_text, api_key)
                 
@@ -200,7 +207,7 @@ with tab_generator:
                 conn.commit()
                 conn.close()
 
-                st.success("¡Episodio creado y guardado en tu biblioteca!")
+                st.success("¡Episodio generado y guardado en tu biblioteca!")
                 st.subheader(script_obj.title)
                 st.audio(audio_save_path, format="audio/mp3")
                 
@@ -212,54 +219,77 @@ with tab_generator:
                 st.error(f"Error durante el proceso: {e}")
 
 # ==========================================
-# PESTAÑA 2: BIBLIOTECA
+# PESTAÑA 2: BIBLIOTECA DE EPISODIOS
 # ==========================================
 with tab_library:
-    st.header("Biblioteca Permanente")
+    st.header("Episodios Guardados")
+    conn = get_db()
+    episodes = conn.execute("SELECT id, title, date, pdf_path, audio_path, transcript_json FROM episodes ORDER BY id DESC").fetchall()
+    conn.close()
+
+    if not episodes:
+        st.info("Aún no tienes episodios guardados. Sube un PDF en la primera pestaña para generar el primero.")
+    else:
+        for ep_id, ep_title, ep_date, ep_pdf, ep_audio, ep_json in episodes:
+            with st.container():
+                st.subheader(ep_title)
+                st.caption(f"Generado el: {ep_date}")
+                
+                if os.path.exists(ep_audio):
+                    st.audio(ep_audio, format="audio/mp3")
+                    with open(ep_audio, "rb") as af:
+                        st.download_button(
+                            label="⬇️ Descargar Episodio en MP3",
+                            data=af.read(),
+                            file_name=os.path.basename(ep_audio),
+                            mime="audio/mpeg",
+                            key=f"dl_audio_{ep_id}"
+                        )
+
+                with st.expander("📄 Ver Transcripción Completa"):
+                    dialogue_data = json.loads(ep_json)
+                    for turn in dialogue_data.get("dialogue", []):
+                        st.markdown(f"**{turn['speaker']}:** {turn['text']}")
+
+                if os.path.exists(ep_pdf):
+                    with open(ep_pdf, "rb") as pf:
+                        st.download_button(
+                            label="📑 Descargar Paper Original (PDF)",
+                            data=pf.read(),
+                            file_name=os.path.basename(ep_pdf),
+                            mime="application/pdf",
+                            key=f"dl_pdf_{ep_id}"
+                        )
+                st.divider()
+
+# ==========================================
+# PESTAÑA 3: GESTOR DE MÚSICA
+# ==========================================
+with tab_music:
+    st.header("Pistas de Música de Fondo")
+    st.write("Sube canciones o pistas instrumentales (MP3) para guardarlas de forma permanente.")
     
-    col_episodes, col_music = st.columns([2, 1])
-
-    with col_episodes:
-        st.subheader("📻 Episodios Guardados")
-        conn = get_db()
-        episodes = conn.execute("SELECT id, title, date, pdf_path, audio_path, transcript_json FROM episodes ORDER BY id DESC").fetchall()
-        conn.close()
-
-        if not episodes:
-            st.info("Aún no tienes episodios guardados. Genera uno en la otra pestaña.")
+    uploaded_music = st.file_uploader("Selecciona un archivo MP3", type=["mp3"], key="uploader_music")
+    if uploaded_music is not None:
+        target_path = os.path.join(MUSIC_DIR, uploaded_music.name)
+        if not os.path.exists(target_path):
+            with open(target_path, "wb") as f:
+                f.write(uploaded_music.getbuffer())
+            st.success(f"Pista guardada con éxito: {uploaded_music.name}")
         else:
-            for ep_id, ep_title, ep_date, ep_pdf, ep_audio, ep_json in episodes:
-                with st.container():
-                    st.markdown(f"### {ep_title}")
-                    st.caption(f"Fecha de creación: {ep_date}")
-                    
-                    if os.path.exists(ep_audio):
-                        st.audio(ep_audio, format="audio/mp3")
-                        with open(ep_audio, "rb") as af:
-                            st.download_button(
-                                label="⬇️ Descargar Audio MP3",
-                                data=af.read(),
-                                file_name=os.path.basename(ep_audio),
-                                mime="audio/mpeg",
-                                key=f"dl_audio_{ep_id}"
-                            )
+            st.info("Esa pista ya existe en la biblioteca musical.")
 
-                    with st.expander("📄 Ver Transcripción"):
-                        dialogue_data = json.loads(ep_json)
-                        for turn in dialogue_data.get("dialogue", []):
-                            st.markdown(f"**{turn['speaker']}:** {turn['text']}")
-
-                    if os.path.exists(ep_pdf):
-                        with open(ep_pdf, "rb") as pf:
-                            st.download_button(
-                                label="📑 Descargar PDF original",
-                                data=pf.read(),
-                                file_name=os.path.basename(ep_pdf),
-                                mime="application/pdf",
-                                key=f"dl_pdf_{ep_id}"
-                            )
-                    st.divider()
-
-    with col_music:
-        st.subheader("🎵 Pistas de Música")
-        uploaded_music = st.file_uploader
+    st.subheader("Tu Colección Musical")
+    saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.lower().endswith(".mp3")]
+    
+    if saved_tracks:
+        for track in saved_tracks:
+            track_path = os.path.join(MUSIC_DIR, track)
+            col_info, col_player = st.columns([1, 2])
+            with col_info:
+                st.write(f"🎵 **{track}**")
+            with col_player:
+                st.audio(track_path, format="audio/mp3")
+            st.divider()
+    else:
+        st.info("Todavía no has subido ninguna pista de música.")
