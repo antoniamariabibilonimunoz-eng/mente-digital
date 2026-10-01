@@ -42,13 +42,12 @@ def get_db():
 # --- MODELOS DE DATOS ---
 class DialogueTurn(BaseModel):
     speaker: str = Field(description="'ANA' o 'DANI'")
-    text: str = Field(description="Intervención natural, conversacional y explicativa")
+    text: str = Field(description="Intervención hablada de este turno")
 
 class PodcastScript(BaseModel):
     title: str = Field(description="Título exacto del episodio")
     dialogue: List[DialogueTurn] = Field(description="Secuencia del podcast")
 
-# --- PROMPT METODOLÓGICO DERIVADO DEL EJEMPLO ---
 SYSTEM_PROMPT = """
 Eres el guionista principal del podcast científico 'Mente Digital'. 
 Tu objetivo es analizar un artículo científico empírico y convertirlo en un diálogo divulgativo, riguroso, pausado y profundamente analítico entre:
@@ -78,16 +77,16 @@ def generate_script(pdf_text: str, api_key: str) -> PodcastScript:
     client = genai.Client(api_key=api_key.strip())
     cleaned = pdf_text[:90000]
     
-    prompt = f"""
-{SYSTEM_PROMPT}
+    prompt = (
+        f"{SYSTEM_PROMPT}\n\n"
+        "A continuación tienes el texto del artículo científico:\n"
+        f"{cleaned}\n\n"
+        "Genera el guion estructurado estrictamente en formato JSON con la siguiente estructura:\n"
+        "- title: título del episodio\n"
+        "- dialogue: lista de turnos donde cada turno tiene 'speaker' (ANA o DANI) y 'text' (su intervención)\n"
+        "Devuelve únicamente el bloque JSON válido sin formato markdown ni texto adicional."
+    )
 
-A continuación tienes el texto del artículo científico:
-{cleaned}
-
-Genera el guion estructurado estrictamente en formato JSON con:
-- "title": (string)
-- "dialogue": lista de turnos [{"speaker": "ANA"|"DANI", "text": "..."}]
-"""
     candidate_models = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
     last_error = None
 
@@ -263,20 +262,4 @@ with tab_library:
 
     with col_music:
         st.subheader("🎵 Pistas de Música")
-        uploaded_music = st.file_uploader("Subir nueva pista de fondo (MP3)", type=["mp3"], key="music_uploader")
-        
-        if uploaded_music:
-            music_target = os.path.join(MUSIC_DIR, uploaded_music.name)
-            with open(music_target, "wb") as f:
-                f.write(uploaded_music.getbuffer())
-            st.success(f"Pista '{uploaded_music.name}' guardada.")
-
-        saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.endswith(".mp3")]
-        if saved_tracks:
-            st.write("**Música disponible:**")
-            for track in saved_tracks:
-                st.write(f"🔊 {track}")
-                track_path = os.path.join(MUSIC_DIR, track)
-                st.audio(track_path, format="audio/mp3")
-        else:
-            st.info("No hay música subida todavía.")
+        uploaded_music = st.file_uploader
