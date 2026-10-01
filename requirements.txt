@@ -1,5 +1,5 @@
 streamlit
 pymupdf
-google-genai
+google-generativeai
 edge-tts
 pydantic
