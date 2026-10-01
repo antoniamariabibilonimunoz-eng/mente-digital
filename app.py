@@ -1,5 +1,4 @@
 import streamlit as st
-import fitz  # PyMuPDF
 import json
 import asyncio
 import edge_tts
@@ -48,59 +47,63 @@ class PodcastScript(BaseModel):
     title: str = Field(description="Título exacto del episodio")
     dialogue: List[DialogueTurn] = Field(description="Secuencia del podcast")
 
+# --- PROMPT CALIBRADO CON EL ESTILO DEL EJEMPLO 2 ---
 SYSTEM_PROMPT = """
 Eres el guionista principal del podcast científico 'Mente Digital'. 
 Tu objetivo es analizar un artículo científico empírico y convertirlo en un diálogo divulgativo, riguroso, pausado y profundamente analítico entre:
 - ANA: Conduce el programa. Hace preguntas inteligentes, pide la 'versión corta', señala las implicaciones prácticas y resume los puntos clave con sentido común.
 - DANI: Analista metodológico. Lee la letra pequeña, desglosa la muestra, contextualiza los datos (explica qué significa un tamaño de efecto pequeño, por qué una muestra grande influye en la significación, advierte de solapamientos entre preguntas y desmitifica los titulares sensacionalistas).
 
-ESTRUCTURA OBLIGATORIA DEL DIÁLOGO (sigue este orden y ritmo):
-1. Apertura: Bienvenida, presentación del tema actual, ficha del estudio (autores, revista, muestra general) y la 'versión corta' inicial sin tecnicismos exagerados.
-2. Por qué este estudio: Qué hueco llena, en qué contexto geográfico/social se hace, y aclaración conceptual de las variables delicadas (ej. si 'adicción' o 'dependencia' se mide como continuo y no como diagnóstico clínico).
-3. Cómo se hizo (Metodología): Procedimiento de recogida, filtros de calidad (preguntas trampa, tiempos de respuesta), tasa de respuesta, tamaño de grupos y diferencias sociodemográficas de partida (edad, ocupación, sesgos del panel). Definición operativa de qué se considera 'usuario'.
-4. Comparaciones principales (Usuarios vs No usuarios): Diferencias estadísticas encontradas acompañadas obligatoriamente de sus tamaños del efecto (d de Cohen, etc.). Explicación de cómo las muestras grandes facilitan la significación estadística. Advertencia de correlación vs causalidad (diseño transversal).
-5. Desglose detallado de motivos / predictores: Qué conductas son las más comunes y cuáles son minoritarias. Qué variables correlacionan más fuerte con el problema y posibles solapamientos metodológicos en las preguntas. Predictores estadísticos en regresión.
-6. Modelos estadísticos avanzados (Mediación / Moderación si los hay): Explicación clara de si la variable puente explica total o parcialmente el efecto, patrones atípicos (supresión, mediaciones inconsistentes) y advertencia de que la mediación estadística en datos transversales no prueba causa. Mecanismo teórico propuesto por los autores.
-7. Limitaciones y Fortalezas: Desglose punto por punto de las costuras del estudio (medidas ultracortas, autoinforme, sesgo de deseabilidad, representatividad) y sus méritos metodológicos.
-8. Qué podemos llevarnos y Cierre: Aplicación práctica sensata, el titular que NO se debe dar a la prensa, recordatorio ético de que la tecnología o los tests no sustituyen el apoyo profesional/humano cualificado, y despedida.
+REGLAS DE FORMATO Y ESTILO:
+1. Diálogo vivo tipo 'ping-pong': turnos cortos (máximo 2 a 4 frases por turno). Prohibidos los monólogos largos.
+2. Minería exhaustiva de datos: extrae de las tablas los filtros de calidad (preguntas trampa, descartes), diferencias demográficas exactas (edad, empleo, etc.), los tamaños del efecto (d de Cohen, betas, etc.) y explica qué significan en la práctica.
+3. Desglose analítico estructurado en los siguientes bloques:
+   - Apertura (Bienvenida, ficha del estudio y la 'versión corta').
+   - Por qué este estudio (Hueco que llena, contexto y definición conceptual de las variables).
+   - Cómo se hizo (Muestra, cribado de calidad, comparabilidad de grupos y definición de usuario).
+   - Comparación de grupos (Diferencias estadísticas vs tamaños del efecto, muestra grande y correlación vs causalidad).
+   - Para qué se usa / Predictores (Frecuencias mayoritarias vs minoritarias, regresiones y solapamiento entre preguntas).
+   - Modelos avanzados (Mediación o moderación, si es parcial/total o supresión, y mecanismo teórico propuesto).
+   - Límites y fortalezas (Costuras del estudio y virtudes objetivas).
+   - Qué podemos llevarnos (Titular a evitar en prensa, utilidad práctica y recordatorio de que la tecnología no sustituye el apoyo humano/profesional).
 
-ESTILO:
-- Tono coloquial pero técnicamente impecable (hablado, natural, sin rodeos artificiales).
-- No uses tecnicismos sin explicarlos brevemente (ej. si dices "supresión" o "d de Cohen", Dani lo aterriza con un ejemplo).
+Toma como modelo absoluto de profundidad, tono y estructura este estándar de calidad:
+ANA: ¡Hola y bienvenidos a Mente Digital! Hoy hablamos de algo que tienes abierto en otra pestaña: ChatGPT, Claude, Gemini... Dani, ¿qué estudio nos traes?
+DANI: Uno publicado en Computers in Human Behavior por el equipo de Julia Brailovskaia en Alemania. Preguntaron a más de siete mil adultos si usan chatbots y cómo se sienten, y miraron qué se asocia con un uso problemático.
+ANA: Y antes de nada, la versión corta.
+DANI: Quienes usan chatbots puntúan algo más alto en soledad, depresión, ansiedad y estrés, y algo más bajo en satisfacción con la vida. Pero las diferencias son pequeñas y el estudio es de una sola foto en el tiempo, así que no dice qué causa qué.
 """
 
-def extract_text_from_pdf(pdf_bytes: bytes) -> str:
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    return "\n".join([page.get_text() for page in doc])
-
-def generate_script(pdf_text: str, api_key: str) -> PodcastScript:
+def generate_script_from_pdf(pdf_bytes: bytes, api_key: str) -> PodcastScript:
     client = genai.Client(api_key=api_key.strip())
-    cleaned = pdf_text[:80000]
     
     prompt = (
         f"{SYSTEM_PROMPT}\n\n"
-        "A continuación tienes el texto del artículo científico:\n"
-        f"{cleaned}\n\n"
-        "Genera el guion estructurado estrictamente en formato JSON con la siguiente estructura:\n"
-        "- title: título del episodio\n"
-        "- dialogue: lista de turnos donde cada turno tiene 'speaker' (ANA o DANI) y 'text' (su intervención)\n"
-        "Devuelve únicamente el bloque JSON válido sin formato markdown ni texto adicional."
+        "Analiza el documento PDF adjunto con el mismo nivel de detalle, ritmo conversacional y rigor metodológico "
+        "mostrado en las instrucciones. Devuelve el resultado en formato JSON estricto con las claves 'title' y 'dialogue' "
+        "(con lista de objetos conteniendo 'speaker' y 'text')."
     )
 
     candidate_models = [
         "gemini-3.0-pro",
         "gemini-3.8-flash",
-        "gemini-3.5-flash-lite",
-        "gemini-pro"
+        "gemini-3.5-flash-lite"
     ]
     last_error = None
 
     for model_name in candidate_models:
         for attempt in range(2):
             try:
+                # Envío directo del PDF como documento nativo
                 response = client.models.generate_content(
                     model=model_name,
-                    contents=prompt,
+                    contents=[
+                        types.Part.from_bytes(
+                            data=pdf_bytes,
+                            mime_type="application/pdf"
+                        ),
+                        prompt
+                    ],
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         temperature=0.3,
@@ -143,7 +146,7 @@ async def create_audio(dialogue: List[DialogueTurn], output_file: str):
             if os.path.exists(tf):
                 os.remove(tf)
 
-# --- RECUPERAR API KEY DESDE SECRETS O ENTORNO ---
+# --- RECUPERAR API KEY ---
 api_key = None
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -168,23 +171,23 @@ with tab_generator:
     st.header("Generador de Podcasts Científicos")
     
     if not api_key:
-        st.error("No se detectó 'GEMINI_API_KEY' en los Secrets de Streamlit. Por favor, configúrala en Settings > Secrets.")
+        st.error("No se detectó 'GEMINI_API_KEY' en los Secrets de Streamlit.")
     
     uploaded_pdf = st.file_uploader("Sube el artículo académico (PDF)", type=["pdf"])
 
     if uploaded_pdf and api_key:
         if st.button("Generar y Guardar en Biblioteca"):
             timestamp = int(time.time())
+            pdf_bytes = uploaded_pdf.read()
             pdf_filename = f"paper_{timestamp}.pdf"
             pdf_save_path = os.path.join(PDF_DIR, pdf_filename)
             
             with open(pdf_save_path, "wb") as f:
-                f.write(uploaded_pdf.getbuffer())
+                f.write(pdf_bytes)
 
             try:
-                with st.spinner("1/2: Analizando metodología, diseño y estructurando diálogo..."):
-                    pdf_text = extract_text_from_pdf(open(pdf_save_path, "rb").read())
-                    script_obj = generate_script(pdf_text, api_key)
+                with st.spinner("1/2: Analizando artículo completo (lectura nativa de tablas y datos)..."):
+                    script_obj = generate_script_from_pdf(pdf_bytes, api_key)
                 
                 with st.spinner("2/2: Sintetizando voces de Ana y Dani..."):
                     audio_filename = f"podcast_{timestamp}.mp3"
@@ -207,7 +210,7 @@ with tab_generator:
                 conn.commit()
                 conn.close()
 
-                st.success("¡Episodio generado y guardado en tu biblioteca!")
+                st.success("¡Episodio generado con el estándar analítico completo!")
                 st.subheader(script_obj.title)
                 st.audio(audio_save_path, format="audio/mp3")
                 
@@ -228,7 +231,7 @@ with tab_library:
     conn.close()
 
     if not episodes:
-        st.info("Aún no tienes episodios guardados. Sube un PDF en la primera pestaña para generar el primero.")
+        st.info("Aún no tienes episodios guardados.")
     else:
         for ep_id, ep_title, ep_date, ep_pdf, ep_audio, ep_json in episodes:
             with st.container():
@@ -267,17 +270,13 @@ with tab_library:
 # ==========================================
 with tab_music:
     st.header("Pistas de Música de Fondo")
-    st.write("Sube canciones o pistas instrumentales (MP3) para guardarlas de forma permanente.")
-    
     uploaded_music = st.file_uploader("Selecciona un archivo MP3", type=["mp3"], key="uploader_music")
     if uploaded_music is not None:
         target_path = os.path.join(MUSIC_DIR, uploaded_music.name)
         if not os.path.exists(target_path):
             with open(target_path, "wb") as f:
                 f.write(uploaded_music.getbuffer())
-            st.success(f"Pista guardada con éxito: {uploaded_music.name}")
-        else:
-            st.info("Esa pista ya existe en la biblioteca musical.")
+            st.success(f"Pista guardada: {uploaded_music.name}")
 
     st.subheader("Tu Colección Musical")
     saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.lower().endswith(".mp3")]
@@ -292,4 +291,4 @@ with tab_music:
                 st.audio(track_path, format="audio/mp3")
             st.divider()
     else:
-        st.info("Todavía no has subido ninguna pista de música.")
+        st.info("No hay pistas de música subidas.")
