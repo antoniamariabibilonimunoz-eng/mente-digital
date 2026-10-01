@@ -15,118 +15,32 @@ from typing import List
 
 st.set_page_config(page_title="Mente Digital", layout="wide", page_icon="🎙")
 
-# --- DIRECTORIOS Y BASE DE DATOS LOCAL ---
+# --- DIRECTORIOS LOCALES ---
 DATA_DIR = "library_data"
-PDF_DIR = os.path.join(DATA_DIR, "pdfs")
+PDF_DIR = os.path.join(DATA_DIR, "pending_papers")
 AUDIO_DIR = os.path.join(DATA_DIR, "audios")
 MUSIC_DIR = os.path.join(DATA_DIR, "music")
+DB_PATH = os.path.join(DATA_DIR, "library.db")
 
 for d in [PDF_DIR, AUDIO_DIR, MUSIC_DIR]:
     os.makedirs(d, exist_ok=True)
 
-DB_PATH = os.path.join(DATA_DIR, "library.db")
-
-def get_db_connection():
-    conn = sqlite3.connect(DB_PATH, timeout=60.0)
-    conn.execute("PRAGMA journal_mode=WAL;")
+# --- BASE DE DATOS SIMPLE ---
+def get_db():
+    conn = sqlite3.connect(DB_PATH, timeout=20.0)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS episodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            date TEXT,
+            pdf_path TEXT,
+            audio_path TEXT,
+            transcript_json TEXT
+        )
+    """)
+    conn.commit()
     return conn
-
-def init_and_clean_db():
-    conn = get_db_connection()
-    try:
-        c = conn.cursor()
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS uploaded_papers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                filename TEXT UNIQUE,
-                filepath TEXT,
-                upload_date TEXT,
-                status TEXT DEFAULT 'pending'
-            )
-        """)
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS episodes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT,
-                date TEXT,
-                pdf_path TEXT,
-                audio_path TEXT,
-                transcript_json TEXT
-            )
-        """)
-        # Purgar cola atascada para restablecer velocidad
-        c.execute("DELETE FROM uploaded_papers")
-        conn.commit()
-    finally:
-        conn.close()
-
-    # Eliminar PDFs huérfanos que saturaban el disco
-    for fname in os.listdir(PDF_DIR):
-        fpath = os.path.join(PDF_DIR, fname)
-        if os.path.isfile(fpath) and fname.endswith(".pdf"):
-            try:
-                os.remove(fpath)
-            except Exception:
-                pass
-
-init_and_clean_db()
-
-def delete_uploaded_paper(paper_id: int, filepath: str):
-    conn = get_db_connection()
-    try:
-        c = conn.cursor()
-        c.execute("DELETE FROM uploaded_papers WHERE id = ?", (paper_id,))
-        conn.commit()
-    finally:
-        conn.close()
-    if filepath and os.path.exists(filepath):
-        try:
-            os.remove(filepath)
-        except Exception:
-            pass
-
-def clear_all_uploaded_papers():
-    conn = get_db_connection()
-    try:
-        c = conn.cursor()
-        c.execute("DELETE FROM uploaded_papers")
-        conn.commit()
-    finally:
-        conn.close()
-
-    for fname in os.listdir(PDF_DIR):
-        fpath = os.path.join(PDF_DIR, fname)
-        if os.path.isfile(fpath) and fname.endswith(".pdf"):
-            try:
-                os.remove(fpath)
-            except Exception:
-                pass
-
-def delete_episode(ep_id: int, pdf_path: str, audio_path: str):
-    conn = get_db_connection()
-    try:
-        c = conn.cursor()
-        c.execute("DELETE FROM episodes WHERE id = ?", (ep_id,))
-        conn.commit()
-    finally:
-        conn.close()
-    if pdf_path and os.path.exists(pdf_path):
-        try:
-            os.remove(pdf_path)
-        except Exception:
-            pass
-    if audio_path and os.path.exists(audio_path):
-        try:
-            os.remove(audio_path)
-        except Exception:
-            pass
-
-def delete_music(music_path: str):
-    if music_path and os.path.exists(music_path):
-        try:
-            os.remove(music_path)
-        except Exception:
-            pass
 
 # --- MODELOS DE DATOS ---
 class DialogueTurn(BaseModel):
@@ -161,7 +75,6 @@ REGLAS DE FORMATO Y ESTILO:
 
 def generate_script_from_pdf(pdf_bytes: bytes, api_key: str) -> PodcastScript:
     client = genai.Client(api_key=api_key.strip())
-    
     prompt = (
         f"{SYSTEM_PROMPT}\n\n"
         "Analiza el documento PDF adjunto. Extrae minuciosamente todos sus datos empíricos, tablas y detalles "
@@ -170,11 +83,7 @@ def generate_script_from_pdf(pdf_bytes: bytes, api_key: str) -> PodcastScript:
         "Devuelve únicamente el bloque JSON con las claves 'title' y 'dialogue' (con lista de turnos 'speaker' y 'text')."
     )
 
-    candidate_models = [
-        "gemini-3.0-pro",
-        "gemini-3.8-flash",
-        "gemini-3.5-flash-lite"
-    ]
+    candidate_models = ["gemini-3.0-pro", "gemini-3.8-flash", "gemini-3.5-flash-lite"]
     last_error = None
 
     for model_name in candidate_models:
@@ -183,10 +92,7 @@ def generate_script_from_pdf(pdf_bytes: bytes, api_key: str) -> PodcastScript:
                 response = client.models.generate_content(
                     model=model_name,
                     contents=[
-                        types.Part.from_bytes(
-                            data=pdf_bytes,
-                            mime_type="application/pdf"
-                        ),
+                        types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
                         prompt
                     ],
                     config=types.GenerateContentConfig(
@@ -206,7 +112,7 @@ def generate_script_from_pdf(pdf_bytes: bytes, api_key: str) -> PodcastScript:
                 return PodcastScript(**script_dict)
             except Exception as e:
                 last_error = e
-                time.sleep(3)
+                time.sleep(2)
                 continue
 
     raise last_error
@@ -245,7 +151,7 @@ except Exception:
 if not api_key:
     api_key = os.getenv("GEMINI_API_KEY")
 
-# --- INTERFAZ PRINCIPAL ---
+# --- NAVEGACIÓN ---
 tab_papers, tab_library, tab_mixer, tab_music = st.tabs([
     "📥 Mis Papers (Subir y Procesar)", 
     "📻 Biblioteca de Episodios",
@@ -258,118 +164,96 @@ tab_papers, tab_library, tab_mixer, tab_music = st.tabs([
 # ==========================================
 with tab_papers:
     st.header("Almacén de Artículos Científicos")
-    st.caption("Almacén limpio y acelerado. Sube tus PDFs y procésalos individualmente.")
     
     if not api_key:
         st.error("No se detectó 'GEMINI_API_KEY' en los Secrets de Streamlit.")
 
     uploaded_files = st.file_uploader(
-        "Arrastra o selecciona tus archivos PDF", 
+        "Sube uno o varios archivos PDF", 
         type=["pdf"], 
         accept_multiple_files=True, 
-        key="batch_pdf_uploader"
+        key="pdf_uploader_clean"
     )
 
     if uploaded_files:
-        if st.button("💾 Guardar Archivos en Almacén", type="primary"):
-            saved_count = 0
-            conn = get_db_connection()
-            try:
-                c = conn.cursor()
-                for uploaded_file in uploaded_files:
-                    c.execute("SELECT id FROM uploaded_papers WHERE filename = ?", (uploaded_file.name,))
-                    if not c.fetchone():
-                        safe_name = f"{int(time.time() * 1000)}_{uploaded_file.name}"
-                        pdf_path = os.path.join(PDF_DIR, safe_name)
-                        with open(pdf_path, "wb") as f:
-                            f.write(uploaded_file.getbuffer())
-                            
-                        c.execute("""
-                            INSERT INTO uploaded_papers (filename, filepath, upload_date, status)
-                            VALUES (?, ?, ?, ?)
-                        """, (uploaded_file.name, pdf_path, datetime.now().strftime("%Y-%m-%d %H:%M"), "ready"))
-                        saved_count += 1
-                conn.commit()
-            finally:
-                conn.close()
-
-            if saved_count > 0:
-                st.success(f"Guardados {saved_count} artículo(s) nuevos.")
-            else:
-                st.info("Los archivos ya estaban en el almacén.")
+        if st.button("💾 Guardar Archivos en el Almacén", type="primary"):
+            guardados = 0
+            for uf in uploaded_files:
+                destino = os.path.join(PDF_DIR, uf.name)
+                with open(destino, "wb") as f:
+                    f.write(uf.getbuffer())
+                guardados += 1
+            st.success(f"Se han guardado {guardados} archivo(s) en el almacén.")
             st.rerun()
 
     st.divider()
 
-    conn = get_db_connection()
-    try:
-        c = conn.cursor()
-        c.execute("SELECT id, filename, filepath, upload_date FROM uploaded_papers ORDER BY id DESC")
-        papers = c.fetchall()
-    finally:
-        conn.close()
+    # Listar los PDFs que están físicamente en la carpeta
+    archivos_pdf = [f for f in os.listdir(PDF_DIR) if f.lower().endswith(".pdf")]
 
-    col_title_papers, col_clear_papers = st.columns([4, 1.5])
-    with col_title_papers:
+    col_tit, col_btn_vaciar = st.columns([4, 1.5])
+    with col_tit:
         st.subheader("📚 Artículos Listos para Procesar")
-    with col_clear_papers:
-        if papers:
-            if st.button("🗑️ Vaciar Todo el Almacén", key="btn_clear_all_papers"):
-                clear_all_uploaded_papers()
-                st.warning("Almacén vaciado con éxito.")
+    with col_btn_vaciar:
+        if archivos_pdf:
+            if st.button("🗑️ Vaciar Todo el Almacén", key="btn_vaciar_todo"):
+                for f in archivos_pdf:
+                    try:
+                        os.remove(os.path.join(PDF_DIR, f))
+                    except Exception:
+                        pass
+                st.warning("Almacén vaciado.")
                 st.rerun()
 
-    if not papers:
-        st.info("No hay artículos en la cola. Sube los PDFs que quieras analizar.")
+    if not archivos_pdf:
+        st.info("No tienes artículos pendientes. Arrastra tus PDFs arriba para guardarlos.")
     else:
-        for p_id, p_name, p_path, p_date in papers:
+        for nombre_pdf in archivos_pdf:
+            ruta_pdf = os.path.join(PDF_DIR, nombre_pdf)
             with st.container():
-                col_txt, col_action, col_del = st.columns([3, 1.4, 0.9])
-                with col_txt:
-                    st.write(f"📄 **{p_name}**")
-                    st.caption(f"Subido el: {p_date}")
-                with col_action:
-                    if st.button("🎙️ Generar Podcast", key=f"btn_gen_{p_id}", disabled=not api_key):
-                        if not os.path.exists(p_path):
-                            st.error("El archivo PDF no se encontró en el disco.")
-                        else:
-                            with open(p_path, "rb") as f:
-                                pdf_bytes = f.read()
+                col_info, col_generar, col_borrar = st.columns([3, 1.4, 0.8])
+                with col_info:
+                    st.write(f"📄 **{nombre_pdf}**")
+                with col_generar:
+                    if st.button("🎙️ Generar Podcast", key=f"gen_{nombre_pdf}", disabled=not api_key):
+                        with open(ruta_pdf, "rb") as f_pdf:
+                            pdf_bytes = f_pdf.read()
 
-                            try:
-                                with st.spinner("1/2: Analizando artículo y tablas estadísticas..."):
-                                    script_obj = generate_script_from_pdf(pdf_bytes, api_key)
-                                
-                                with st.spinner("2/2: Sintetizando voces de Ana y Dani..."):
-                                    audio_filename = f"podcast_{int(time.time() * 1000)}.mp3"
-                                    audio_save_path = os.path.join(AUDIO_DIR, audio_filename)
-                                    asyncio.run(create_audio(script_obj.dialogue, audio_save_path))
+                        try:
+                            with st.spinner("1/2: Analizando artículo y tablas estadísticas..."):
+                                script_obj = generate_script_from_pdf(pdf_bytes, api_key)
 
-                                conn_ep = get_db_connection()
-                                try:
-                                    c_ep = conn_ep.cursor()
-                                    c_ep.execute("""
-                                        INSERT INTO episodes (title, date, pdf_path, audio_path, transcript_json)
-                                        VALUES (?, ?, ?, ?, ?)
-                                    """, (
-                                        script_obj.title,
-                                        datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                        p_path,
-                                        audio_save_path,
-                                        script_obj.model_dump_json()
-                                    ))
-                                    conn_ep.commit()
-                                finally:
-                                    conn_ep.close()
+                            with st.spinner("2/2: Sintetizando voces de Ana y Dani..."):
+                                audio_filename = f"podcast_{int(time.time())}.mp3"
+                                audio_save_path = os.path.join(AUDIO_DIR, audio_filename)
+                                asyncio.run(create_audio(script_obj.dialogue, audio_save_path))
 
-                                st.success(f"¡Episodio '{script_obj.title}' creado! Revisa la 'Biblioteca de Episodios'.")
-                                st.audio(audio_save_path, format="audio/mp3")
-                            except Exception as e:
-                                st.error(f"Error procesando '{p_name}': {e}")
-                with col_del:
-                    if st.button("🗑️ Eliminar", key=f"btn_del_paper_{p_id}"):
-                        delete_uploaded_paper(p_id, p_path)
-                        st.info(f"Artículo '{p_name}' eliminado.")
+                            # Guardar en SQLite
+                            conn = get_db()
+                            c = conn.cursor()
+                            c.execute("""
+                                INSERT INTO episodes (title, date, pdf_path, audio_path, transcript_json)
+                                VALUES (?, ?, ?, ?, ?)
+                            """, (
+                                script_obj.title,
+                                datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                ruta_pdf,
+                                audio_save_path,
+                                script_obj.model_dump_json()
+                            ))
+                            conn.commit()
+                            conn.close()
+
+                            st.success(f"¡Episodio creado con éxito! Puedes escucharlo en 'Biblioteca de Episodios'.")
+                            st.audio(audio_save_path, format="audio/mp3")
+                        except Exception as e:
+                            st.error(f"Error procesando {nombre_pdf}: {e}")
+                with col_borrar:
+                    if st.button("🗑️", key=f"del_{nombre_pdf}"):
+                        try:
+                            os.remove(ruta_pdf)
+                        except Exception:
+                            pass
                         st.rerun()
                 st.divider()
 
@@ -378,13 +262,11 @@ with tab_papers:
 # ==========================================
 with tab_library:
     st.header("Episodios Generados")
-    conn = get_db_connection()
-    try:
-        c = conn.cursor()
-        c.execute("SELECT id, title, date, pdf_path, audio_path, transcript_json FROM episodes ORDER BY id DESC")
-        episodes = c.fetchall()
-    finally:
-        conn.close()
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT id, title, date, pdf_path, audio_path, transcript_json FROM episodes ORDER BY id DESC")
+    episodes = c.fetchall()
+    conn.close()
 
     if not episodes:
         st.info("Aún no tienes episodios generados en la biblioteca.")
@@ -396,8 +278,17 @@ with tab_library:
                     st.subheader(ep_title)
                     st.caption(f"Generado el: {ep_date}")
                 with col_del:
-                    if st.button("🗑️ Eliminar", key=f"del_btn_{ep_id}"):
-                        delete_episode(ep_id, ep_pdf, ep_audio)
+                    if st.button("🗑️ Eliminar", key=f"del_ep_{ep_id}"):
+                        conn = get_db()
+                        c = conn.cursor()
+                        c.execute("DELETE FROM episodes WHERE id = ?", (ep_id,))
+                        conn.commit()
+                        conn.close()
+                        if os.path.exists(ep_audio):
+                            try:
+                                os.remove(ep_audio)
+                            except Exception:
+                                pass
                         st.warning("Episodio eliminado.")
                         st.rerun()
 
@@ -435,13 +326,11 @@ with tab_mixer:
     st.header("🎛️ Mezclador de Estudio con Control de Volumen Individual")
     st.write("Ajusta de forma táctil el volumen de la voz y de la música de fondo de manera independiente.")
 
-    conn = get_db_connection()
-    try:
-        c = conn.cursor()
-        c.execute("SELECT id, title, audio_path FROM episodes ORDER BY id DESC")
-        episodes = c.fetchall()
-    finally:
-        conn.close()
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT id, title, audio_path FROM episodes ORDER BY id DESC")
+    episodes = c.fetchall()
+    conn.close()
 
     saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.lower().endswith(".mp3")]
 
@@ -559,7 +448,11 @@ with tab_music:
                 st.audio(track_path, format="audio/mp3")
             with col_del:
                 if st.button("🗑️", key=f"del_track_{track}"):
-                    delete_music(track_path)
+                    if os.path.exists(track_path):
+                        try:
+                            os.remove(track_path)
+                        except Exception:
+                            pass
                     st.rerun()
             st.divider()
     else:
