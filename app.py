@@ -50,16 +50,40 @@ A continuación tienes el texto del artículo científico:
 Genera el guion estructurado estrictamente en formato JSON con las claves:
 - "title": (string)
 - "dialogue": lista de objetos con "speaker" ("ANA" o "DANI") y "text" (su intervención).
-No incluyas texto fuera del bloque JSON.
+No incluyas texto fuera del bloque JSON ni bloques de código markdown como ```json.
 """
-    model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        generation_config={"response_mime_type": "application/json"}
-    )
-    
-    response = model.generate_content(prompt)
-    script_dict = json.loads(response.text)
-    return PodcastScript(**script_dict)
+    candidate_models = [
+        "models/gemini-1.5-flash-latest",
+        "gemini-1.5-flash-latest",
+        "models/gemini-1.5-flash",
+        "gemini-1.5-flash",
+        "models/gemini-1.5-pro-latest",
+        "gemini-pro"
+    ]
+    last_error = None
+
+    for m in candidate_models:
+        try:
+            model = genai.GenerativeModel(
+                model_name=m,
+                generation_config={"response_mime_type": "application/json"}
+            )
+            response = model.generate_content(prompt)
+            raw_text = response.text.strip()
+            if raw_text.startswith("```json"):
+                raw_text = raw_text[7:]
+            if raw_text.startswith("```"):
+                raw_text = raw_text[3:]
+            if raw_text.endswith("```"):
+                raw_text = raw_text[:-3]
+            
+            script_dict = json.loads(raw_text.strip())
+            return PodcastScript(**script_dict)
+        except Exception as e:
+            last_error = e
+            continue
+            
+    raise last_error
 
 async def create_audio(dialogue: List[DialogueTurn], output_file: str):
     temp_files = []
@@ -85,7 +109,6 @@ async def create_audio(dialogue: List[DialogueTurn], output_file: str):
 st.title("🎙 Mente Digital")
 st.caption("Transforma artículos científicos en podcasts dialogados y rigurosos")
 
-# 1. Recuperar API Key (desde Secrets o entrada manual)
 api_key = None
 try:
     if "GEMINI_API_KEY" in st.secrets:
