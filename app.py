@@ -30,7 +30,7 @@ INDEX_FILE = os.path.join(DATA_DIR, "library_index.json")
 for d in [DATA_DIR, PDF_DIR, AUDIO_DIR, MUSIC_DIR]:
     os.makedirs(d, exist_ok=True)
 
-# --- GESTOR JSON (CERO BLOQUEOS DE BASE DE DATOS) ---
+# --- GESTOR JSON (CERO BLOQUEOS) ---
 def load_episodes() -> list:
     if not os.path.exists(INDEX_FILE):
         return []
@@ -82,10 +82,10 @@ class DialogueTurn(BaseModel):
     text: str = Field(description="Intervención hablada de este turno")
 
 class PodcastScript(BaseModel):
-    title: str = Field(description="Título exacto del episodio")
+    title: str = Field(description="Título formal y exacto del artículo científico en su idioma original (ej. en inglés, tal como aparece en el encabezado del paper)")
     dialogue: List[DialogueTurn] = Field(description="Secuencia del podcast")
 
-# --- PROMPT CALIBRADO: MENOS CIFRAS EN CRUDO, MÁS TRADUCCIÓN INTERPRETATIVA ---
+# --- PROMPT CALIBRADO ---
 SYSTEM_PROMPT = """
 Eres el guionista principal del podcast científico 'Mente Digital'. 
 Tu cometido es analizar minuciosamente un artículo empírico de investigación y transformarlo en un guion dialogado riguroso, pausado, sobrio y natural entre dos conductores:
@@ -93,11 +93,12 @@ Tu cometido es analizar minuciosamente un artículo empírico de investigación 
 - ANA: Conductora e inquisidora metodológica. Hace preguntas incisivas, directas y breves. Pide la 'versión corta', señala las implicaciones prácticas, cuestiona los titulares sensacionalistas y frena a Dani cuando la estadística se vuelve abstracta para pedirle qué significa en la práctica.
 - DANI: Analista metodológico. Lee la letra pequeña del paper. Tiene espacio para explicarse con calma, pero NO es una calculadora parlante: utiliza los números justos y necesarios como anclas (tamaños de muestra, edades clave, porcentajes ilustrativos, rangos de escala) e inmediatamente TRADUCE qué significan esos datos en la vida real y en la interpretación clínica de los autores.
 
-REGLAS DE ORO DE ESTILO (CRÍTICO PARA FORMATO AUDIO):
-1. Menos fórmulas, más traducción conceptual: PROHIBIDO recitar estadísticos brutos de tabla como grados de libertad F(x, y), trazas de Hotelling, intervalos de confianza numéricos o fórmulas de regresión complejas. En audio eso no se procesa. Si hay una regresión o una mediación, Dani explica la historia detrás del dato: qué variable influye sobre cuál, si una anula a la otra (efecto supresión), si la mediación es total o parcial, y qué hipótesis teórica proponen los autores para explicarlo.
-2. Los números como contraste de realidad: Cita únicamente los datos que aportan perspectiva al oyente (ejemplo: si la escala va de 6 a 30 y la media fue 8,6, Dani destaca que la gente puntúa muy bajo y que no hay epidemia; si el 77% nunca usa el bot para evadirse, destaca que el confidente emocional es una minoría).
-3. Diálogo humano y reposado: Ana hace preguntas afiladas y concisas; Dani desarrolla párrafos explicativos fluidos, pedagógicos y conversacionales, sin muletillas teatrales de locutor barato ("¡Qué fascinante!", "¡Cuéntanos más!").
-4. El guion debe estructurarse obligatoriamente siguiendo estos 8 bloques:
+REGLAS DE ORO:
+1. TÍTULO DEL EPISODIO: En el campo 'title' debes extraer y colocar el TÍTULO EXACTO DEL ARTÍCULO CIENTÍFICO en su idioma original tal y como aparece publicado en el PDF (habitualmente en inglés). Prohibido inventar títulos creativos o lemas como "Mente Digital: El chat que alivia la tormenta".
+2. Menos fórmulas, más traducción conceptual: PROHIBIDO recitar estadísticos brutos de tabla como grados de libertad F(x, y), trazas de Hotelling, intervalos de confianza numéricos o fórmulas de regresión complejas. En audio eso no se procesa. Si hay una regresión o una mediación, Dani explica la historia detrás del dato: qué variable influye sobre cuál, si una anula a la otra (efecto supresión), si la mediación es total o parcial, y qué hipótesis teórica proponen los autores para explicarlo.
+3. Los números como contraste de realidad: Cita únicamente los datos que aportan perspectiva al oyente (ejemplo: si la escala va de 6 a 30 y la media fue 8,6, Dani destaca que la gente puntúa muy bajo y que no hay epidemia; si el 77% nunca usa el bot para evadirse, destaca que el confidente emocional es una minoría).
+4. Diálogo humano y reposado: Ana hace preguntas afiladas y concisas; Dani desarrolla párrafos explicativos fluidos, pedagógicos y conversacionales, sin muletillas teatrales de locutor barato ("¡Qué fascinante!", "¡Cuéntanos más!").
+5. El guion debe estructurarse obligatoriamente siguiendo estos 8 bloques:
    - Apertura (Bienvenida, ficha del estudio y versión corta).
    - Por qué este estudio (Hueco en la literatura, contexto cultural y delimitación conceptual del constructo medido).
    - Cómo se hizo (Muestra, cribado de calidad, tasas de respuesta, diferencias sociodemográficas de partida y definición operativa de usuario/participante).
@@ -115,6 +116,7 @@ def generate_script_from_pdf(pdf_bytes: bytes, api_key: str) -> PodcastScript:
         "Analiza el documento PDF adjunto. Extrae minuciosamente todos sus datos empíricos, tablas y detalles "
         "metodológicos reales, y redacta el diálogo completo entre ANA y DANI reproduciendo exactamente el mismo "
         "nivel de profundidad pedagógica, traducción de resultados numéricos y rigor conceptual.\n\n"
+        "RECUERDA: En el campo 'title' escribe estrictamente el título académico original del artículo en su idioma de publicación original (generalmente en inglés).\n\n"
         "Devuelve únicamente el bloque JSON con las claves 'title' y 'dialogue' (con lista de turnos 'speaker' y 'text')."
     )
 
@@ -190,7 +192,7 @@ if not api_key:
 tab_papers, tab_library, tab_mixer, tab_music = st.tabs([
     "📥 Mis Papers (Subir y Procesar)", 
     "📻 Biblioteca de Episodios",
-    "🎛️️ Mezclador de Estudio (Móvil & PC)",
+    "🎛️ Mezclador de Estudio (Móvil & PC)",
     "🎵 Gestor de Música"
 ])
 
@@ -242,7 +244,7 @@ with tab_papers:
                 st.rerun()
 
     if not archivos_pdf:
-        st.info("No tienes artículos pendientes. Arrastra tus PDFs arriba para guardarlos.")
+        st.info("No tienes artículos pendientes. Sube tus PDFs arriba para guardarlos.")
     else:
         for nombre_pdf in archivos_pdf:
             ruta_pdf = os.path.join(PDF_DIR, nombre_pdf)
@@ -265,14 +267,17 @@ with tab_papers:
                                 audio_save_path = os.path.join(AUDIO_DIR, audio_filename)
                                 asyncio.run(create_audio(script_obj.dialogue, audio_save_path))
 
+                            # Usar el título del paper original retornado o el nombre de archivo como respaldo
+                            final_title = script_obj.title.strip() if script_obj.title else nombre_pdf
+
                             add_episode_record(
-                                title=script_obj.title,
+                                title=final_title,
                                 pdf_path=ruta_pdf,
                                 audio_path=audio_save_path,
                                 transcript_json=script_obj.model_dump_json()
                             )
 
-                            st.success(f"¡Episodio '{script_obj.title}' creado! Ve a la 'Biblioteca de Episodios'.")
+                            st.success(f"¡Episodio creado! Ve a la 'Biblioteca de Episodios'.")
                             st.audio(audio_save_path, format="audio/mp3")
                         except Exception as e:
                             st.error(f"Error procesando {nombre_pdf}: {e}")
@@ -302,12 +307,17 @@ with tab_library:
             ep_pdf = ep.get("pdf_path", "")
             ep_audio = ep.get("audio_path", "")
             ep_json = ep.get("transcript_json", "{}")
+            paper_filename = os.path.basename(ep_pdf) if ep_pdf else ""
 
             with st.container():
                 col_head, col_del = st.columns([5, 1])
                 with col_head:
+                    # Título original del artículo en inglés
                     st.subheader(ep_title)
-                    st.caption(f"Generado el: {ep_date}")
+                    caption_text = f"Generado el: {ep_date}"
+                    if paper_filename:
+                        caption_text += f" • Archivo: {paper_filename}"
+                    st.caption(caption_text)
                 with col_del:
                     if st.button("🗑 Eliminar", key=f"del_ep_{ep_id}"):
                         delete_episode_record(ep_id)
@@ -338,7 +348,7 @@ with tab_library:
                         st.download_button(
                             label="📑 Descargar Paper Original (PDF)",
                             data=pf.read(),
-                            file_name=os.path.basename(ep_pdf),
+                            file_name=paper_filename if paper_filename else "paper.pdf",
                             mime="application/pdf",
                             key=f"dl_pdf_{ep_id}"
                         )
