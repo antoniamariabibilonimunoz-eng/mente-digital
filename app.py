@@ -27,12 +27,13 @@ for d in [PDF_DIR, AUDIO_DIR, MUSIC_DIR]:
 DB_PATH = os.path.join(DATA_DIR, "library.db")
 
 def init_db():
-    with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    try:
         c = conn.cursor()
         c.execute("""
             CREATE TABLE IF NOT EXISTS uploaded_papers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                filename TEXT,
+                filename TEXT UNIQUE,
                 filepath TEXT,
                 upload_date TEXT,
                 status TEXT DEFAULT 'pending'
@@ -49,30 +50,38 @@ def init_db():
             )
         """)
         conn.commit()
+    finally:
+        conn.close()
 
 init_db()
 
 def delete_uploaded_paper(paper_id: int, filepath: str):
-    with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    try:
         c = conn.cursor()
         c.execute("DELETE FROM uploaded_papers WHERE id = ?", (paper_id,))
         conn.commit()
-    if os.path.exists(filepath):
+    finally:
+        conn.close()
+    if filepath and os.path.exists(filepath):
         try:
             os.remove(filepath)
         except Exception:
             pass
 
 def clear_all_uploaded_papers():
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     papers_to_remove = []
-    with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+    try:
         c = conn.cursor()
         c.execute("SELECT filepath FROM uploaded_papers")
         rows = c.fetchall()
-        papers_to_remove = [r[0] for r in rows]
+        papers_to_remove = [r[0] for r in rows if r[0]]
         c.execute("DELETE FROM uploaded_papers")
         conn.commit()
-        
+    finally:
+        conn.close()
+
     for p_path in papers_to_remove:
         if os.path.exists(p_path):
             try:
@@ -81,23 +90,26 @@ def clear_all_uploaded_papers():
                 pass
 
 def delete_episode(ep_id: int, pdf_path: str, audio_path: str):
-    with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    try:
         c = conn.cursor()
         c.execute("DELETE FROM episodes WHERE id = ?", (ep_id,))
         conn.commit()
-    if os.path.exists(pdf_path):
+    finally:
+        conn.close()
+    if pdf_path and os.path.exists(pdf_path):
         try:
             os.remove(pdf_path)
         except Exception:
             pass
-    if os.path.exists(audio_path):
+    if audio_path and os.path.exists(audio_path):
         try:
             os.remove(audio_path)
         except Exception:
             pass
 
 def delete_music(music_path: str):
-    if os.path.exists(music_path):
+    if music_path and os.path.exists(music_path):
         try:
             os.remove(music_path)
         except Exception:
@@ -237,8 +249,6 @@ with tab_papers:
     if not api_key:
         st.error("No se detectó 'GEMINI_API_KEY' en los Secrets de Streamlit.")
 
-    st.write("Selecciona uno o varios PDFs y haz clic en **Guardar en Almacén** para dejarlos listos.")
-    
     uploaded_files = st.file_uploader(
         "Arrastra o selecciona tus archivos PDF", 
         type=["pdf"], 
@@ -247,18 +257,16 @@ with tab_papers:
     )
 
     if uploaded_files:
-        if st.button("💾 Guardar Archivos Seleccionados en Almacén", type="primary"):
+        if st.button("💾 Guardar Archivos en Almacén", type="primary"):
             saved_count = 0
-            with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+            conn = sqlite3.connect(DB_PATH, timeout=30.0)
+            try:
                 c = conn.cursor()
                 for uploaded_file in uploaded_files:
                     c.execute("SELECT id FROM uploaded_papers WHERE filename = ?", (uploaded_file.name,))
-                    existing = c.fetchone()
-                    if not existing:
-                        timestamp = int(time.time() * 1000)
-                        safe_name = f"{timestamp}_{uploaded_file.name}"
+                    if not c.fetchone():
+                        safe_name = f"{int(time.time() * 1000)}_{uploaded_file.name}"
                         pdf_path = os.path.join(PDF_DIR, safe_name)
-                        
                         with open(pdf_path, "wb") as f:
                             f.write(uploaded_file.getbuffer())
                             
@@ -268,18 +276,24 @@ with tab_papers:
                         """, (uploaded_file.name, pdf_path, datetime.now().strftime("%Y-%m-%d %H:%M"), "ready"))
                         saved_count += 1
                 conn.commit()
+            finally:
+                conn.close()
+
             if saved_count > 0:
-                st.success(f"Se han guardado {saved_count} artículo(s) en tu almacén.")
+                st.success(f"Guardados {saved_count} artículo(s) nuevos.")
             else:
-                st.info("Los archivos ya se encontraban guardados en el almacén.")
+                st.info("Los archivos ya estaban en el almacén.")
             st.rerun()
 
     st.divider()
-    
-    with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    try:
         c = conn.cursor()
         c.execute("SELECT id, filename, filepath, upload_date FROM uploaded_papers ORDER BY id DESC")
         papers = c.fetchall()
+    finally:
+        conn.close()
 
     col_title_papers, col_clear_papers = st.columns([4, 1.5])
     with col_title_papers:
@@ -288,7 +302,7 @@ with tab_papers:
         if papers:
             if st.button("🗑️ Vaciar Todo el Almacén", key="btn_clear_all_papers"):
                 clear_all_uploaded_papers()
-                st.warning("Se han eliminado todos los artículos pendientes.")
+                st.warning("Almacén vaciado con éxito.")
                 st.rerun()
 
     if not papers:
@@ -303,7 +317,7 @@ with tab_papers:
                 with col_action:
                     if st.button("🎙️ Generar Podcast", key=f"btn_gen_{p_id}", disabled=not api_key):
                         if not os.path.exists(p_path):
-                            st.error("El archivo PDF no se encontró en el servidor.")
+                            st.error("El archivo PDF no se encontró en el disco.")
                         else:
                             with open(p_path, "rb") as f:
                                 pdf_bytes = f.read()
@@ -317,9 +331,10 @@ with tab_papers:
                                     audio_save_path = os.path.join(AUDIO_DIR, audio_filename)
                                     asyncio.run(create_audio(script_obj.dialogue, audio_save_path))
 
-                                with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
-                                    c = conn.cursor()
-                                    c.execute("""
+                                conn_ep = sqlite3.connect(DB_PATH, timeout=30.0)
+                                try:
+                                    c_ep = conn_ep.cursor()
+                                    c_ep.execute("""
                                         INSERT INTO episodes (title, date, pdf_path, audio_path, transcript_json)
                                         VALUES (?, ?, ?, ?, ?)
                                     """, (
@@ -329,9 +344,11 @@ with tab_papers:
                                         audio_save_path,
                                         script_obj.model_dump_json()
                                     ))
-                                    conn.commit()
+                                    conn_ep.commit()
+                                finally:
+                                    conn_ep.close()
 
-                                st.success(f"¡Episodio '{script_obj.title}' creado con éxito!")
+                                st.success(f"¡Episodio '{script_obj.title}' creado!")
                                 st.audio(audio_save_path, format="audio/mp3")
                             except Exception as e:
                                 st.error(f"Error procesando '{p_name}': {e}")
@@ -347,10 +364,13 @@ with tab_papers:
 # ==========================================
 with tab_library:
     st.header("Episodios Generados")
-    with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    try:
         c = conn.cursor()
         c.execute("SELECT id, title, date, pdf_path, audio_path, transcript_json FROM episodes ORDER BY id DESC")
         episodes = c.fetchall()
+    finally:
+        conn.close()
 
     if not episodes:
         st.info("Aún no tienes episodios guardados en la biblioteca.")
@@ -401,10 +421,13 @@ with tab_mixer:
     st.header("🎛️ Mezclador de Estudio con Control de Volumen Individual")
     st.write("Ajusta de forma táctil el volumen de la voz y de la música de fondo de manera independiente.")
 
-    with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    try:
         c = conn.cursor()
         c.execute("SELECT id, title, audio_path FROM episodes ORDER BY id DESC")
         episodes = c.fetchall()
+    finally:
+        conn.close()
 
     saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.lower().endswith(".mp3")]
 
@@ -427,102 +450,4 @@ with tab_mixer:
                 b64_music = base64.b64encode(f_bg.read()).decode()
 
             mixer_html = f"""
-            <div style="background-color: #1a1c24; padding: 20px; border-radius: 12px; color: #ffffff; font-family: sans-serif;">
-                <div style="display: flex; gap: 10px; margin-bottom: 20px;">
-                    <button id="btnPlayAll" style="flex: 1; padding: 14px; font-size: 16px; font-weight: bold; background-color: #00c853; color: white; border: none; border-radius: 8px; cursor: pointer;">▶ Reproducir Ambos</button>
-                    <button id="btnPauseAll" style="flex: 1; padding: 14px; font-size: 16px; font-weight: bold; background-color: #d50000; color: white; border: none; border-radius: 8px; cursor: pointer;">⏸ Pausar</button>
-                    <button id="btnRestartAll" style="flex: 0.6; padding: 14px; font-size: 16px; font-weight: bold; background-color: #424242; color: white; border: none; border-radius: 8px; cursor: pointer;">⏮ Inicio</button>
-                </div>
-
-                <div style="background: #262936; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                        <span style="font-weight: bold;">🎙️ Volumen Podcast (Voz)</span>
-                        <span id="txtPodVol" style="color: #00e5ff;">100%</span>
-                    </div>
-                    <input type="range" id="sliderPod" min="0" max="1" step="0.01" value="1.0" style="width: 100%; height: 10px; accent-color: #00e5ff; cursor: pointer;">
-                    <audio id="audioPodcast" src="data:audio/mp3;base64,{b64_podcast}" controls style="width: 100%; margin-top: 10px;"></audio>
-                </div>
-
-                <div style="background: #262936; padding: 15px; border-radius: 8px;">
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                        <span style="font-weight: bold;">🎵 Volumen Música de Fondo</span>
-                        <span id="txtBgVol" style="color: #ff4081;">20%</span>
-                    </div>
-                    <input type="range" id="sliderBg" min="0" max="1" step="0.01" value="0.20" style="width: 100%; height: 10px; accent-color: #ff4081; cursor: pointer;">
-                    <audio id="audioMusic" src="data:audio/mp3;base64,{b64_music}" loop controls style="width: 100%; margin-top: 10px;"></audio>
-                </div>
-            </div>
-
-            <script>
-                const pod = document.getElementById('audioPodcast');
-                const bgm = document.getElementById('audioMusic');
-                const sPod = document.getElementById('sliderPod');
-                const sBg = document.getElementById('sliderBg');
-                const tPod = document.getElementById('txtPodVol');
-                const tBg = document.getElementById('txtBgVol');
-
-                pod.volume = 1.0;
-                bgm.volume = 0.20;
-
-                sPod.addEventListener('input', (e) => {{
-                    pod.volume = parseFloat(e.target.value);
-                    tPod.innerText = Math.round(e.target.value * 100) + '%';
-                }});
-
-                sBg.addEventListener('input', (e) => {{
-                    bgm.volume = parseFloat(e.target.value);
-                    tBg.innerText = Math.round(e.target.value * 100) + '%';
-                }});
-
-                document.getElementById('btnPlayAll').addEventListener('click', () => {{
-                    pod.play();
-                    bgm.play();
-                }});
-
-                document.getElementById('btnPauseAll').addEventListener('click', () => {{
-                    pod.pause();
-                    bgm.pause();
-                }});
-
-                document.getElementById('btnRestartAll').addEventListener('click', () => {{
-                    pod.currentTime = 0;
-                    bgm.currentTime = 0;
-                    pod.play();
-                    bgm.play();
-                }});
-            </script>
-            """
-            components.html(mixer_html, height=430)
-
-# ==========================================
-# PESTAÑA 4: GESTOR DE MÚSICA
-# ==========================================
-with tab_music:
-    st.header("Pistas de Música de Fondo")
-    uploaded_music = st.file_uploader("Subir nueva pista MP3", type=["mp3"], key="uploader_music")
-    if uploaded_music is not None:
-        target_path = os.path.join(MUSIC_DIR, uploaded_music.name)
-        if not os.path.exists(target_path):
-            with open(target_path, "wb") as f:
-                f.write(uploaded_music.getbuffer())
-            st.success(f"Pista guardada: {uploaded_music.name}")
-            st.rerun()
-
-    st.subheader("Tu Colección Musical")
-    saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.lower().endswith(".mp3")]
-    
-    if saved_tracks:
-        for track in saved_tracks:
-            track_path = os.path.join(MUSIC_DIR, track)
-            col_info, col_player, col_del = st.columns([2, 3, 1])
-            with col_info:
-                st.write(f"🎵 **{track}**")
-            with col_player:
-                st.audio(track_path, format="audio/mp3")
-            with col_del:
-                if st.button("🗑️", key=f"del_track_{track}"):
-                    delete_music(track_path)
-                    st.rerun()
-            st.divider()
-    else:
-        st.info("No hay pistas de música subidas.")
+            <div style="background-color: #1a1c24; padding: 20px; border-radius: 12px; color: #ffffff; font-
