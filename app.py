@@ -3,6 +3,7 @@ import streamlit as st
 # Debe ser estrictamente la primera instrucción
 st.set_page_config(page_title="Mente Digital", layout="wide", page_icon="🎙")
 
+import streamlit.components.v1 as components
 import json
 import asyncio
 import edge_tts
@@ -13,7 +14,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 from typing import List
 
-# Importación del SDK oficial de Google GenAI
+# Importación segura del SDK oficial de Google GenAI
 try:
     from google import genai
     from google.genai import types
@@ -82,7 +83,7 @@ class DialogueTurn(BaseModel):
     text: str = Field(description="Intervención hablada de este turno")
 
 class PodcastScript(BaseModel):
-    title: str = Field(description="Título formal y exacto del artículo científico en su idioma original (ej. en inglés, tal como aparece en el encabezado del paper)")
+    title: str = Field(description="Título exacto del artículo científico en su idioma original (habitualmente en inglés)")
     dialogue: List[DialogueTurn] = Field(description="Secuencia del podcast")
 
 # --- PROMPT CALIBRADO ---
@@ -244,7 +245,7 @@ with tab_papers:
                 st.rerun()
 
     if not archivos_pdf:
-        st.info("No tienes artículos pendientes. Sube tus PDFs arriba para guardarlos.")
+        st.info("No tienes artículos pendientes. Arrastra tus PDFs arriba para guardarlos.")
     else:
         for nombre_pdf in archivos_pdf:
             ruta_pdf = os.path.join(PDF_DIR, nombre_pdf)
@@ -267,7 +268,6 @@ with tab_papers:
                                 audio_save_path = os.path.join(AUDIO_DIR, audio_filename)
                                 asyncio.run(create_audio(script_obj.dialogue, audio_save_path))
 
-                            # Usar el título del paper original retornado o el nombre de archivo como respaldo
                             final_title = script_obj.title.strip() if script_obj.title else nombre_pdf
 
                             add_episode_record(
@@ -312,7 +312,6 @@ with tab_library:
             with st.container():
                 col_head, col_del = st.columns([5, 1])
                 with col_head:
-                    # Título original del artículo en inglés
                     st.subheader(ep_title)
                     caption_text = f"Generado el: {ep_date}"
                     if paper_filename:
@@ -384,7 +383,7 @@ with tab_mixer:
             with open(track_audio_file, "rb") as f_bg:
                 b64_music = base64.b64encode(f_bg.read()).decode()
 
-            mixer_markup = f"""
+            template_html = """
             <div style="background-color: #1a1c24; padding: 20px; border-radius: 12px; color: #ffffff; font-family: sans-serif;">
                 <div style="display: flex; gap: 10px; margin-bottom: 20px;">
                     <button id="btnPlayAll" style="flex: 1; padding: 14px; font-size: 16px; font-weight: bold; background-color: #00c853; color: white; border: none; border-radius: 8px; cursor: pointer;">▶ Reproducir Ambos</button>
@@ -398,7 +397,7 @@ with tab_mixer:
                         <span id="txtPodVol" style="color: #00e5ff;">100%</span>
                     </div>
                     <input type="range" id="sliderPod" min="0" max="1" step="0.01" value="1.0" style="width: 100%; height: 10px; accent-color: #00e5ff; cursor: pointer;">
-                    <audio id="audioPodcast" src="data:audio/mp3;base64,{b64_podcast}" controls style="width: 100%; margin-top: 10px;"></audio>
+                    <audio id="audioPodcast" src="data:audio/mp3;base64,__B64_PODCAST__" controls style="width: 100%; margin-top: 10px;"></audio>
                 </div>
 
                 <div style="background: #262936; padding: 15px; border-radius: 8px;">
@@ -407,7 +406,7 @@ with tab_mixer:
                         <span id="txtBgVol" style="color: #ff4081;">20%</span>
                     </div>
                     <input type="range" id="sliderBg" min="0" max="1" step="0.01" value="0.20" style="width: 100%; height: 10px; accent-color: #ff4081; cursor: pointer;">
-                    <audio id="audioMusic" src="data:audio/mp3;base64,{b64_music}" loop controls style="width: 100%; margin-top: 10px;"></audio>
+                    <audio id="audioMusic" src="data:audio/mp3;base64,__B64_MUSIC__" loop controls style="width: 100%; margin-top: 10px;"></audio>
                 </div>
             </div>
 
@@ -422,35 +421,36 @@ with tab_mixer:
                 pod.volume = 1.0;
                 bgm.volume = 0.20;
 
-                sPod.oninput = function() {{
-                    pod.volume = parseFloat(this.value);
-                    tPod.innerText = Math.round(this.value * 100) + '%';
-                }};
+                sPod.addEventListener('input', function(e) {
+                    pod.volume = parseFloat(e.target.value);
+                    tPod.innerText = Math.round(e.target.value * 100) + '%';
+                });
 
-                sBg.oninput = function() {{
-                    bgm.volume = parseFloat(this.value);
-                    tBg.innerText = Math.round(this.value * 100) + '%';
-                }};
+                sBg.addEventListener('input', function(e) {
+                    bgm.volume = parseFloat(e.target.value);
+                    tBg.innerText = Math.round(e.target.value * 100) + '%';
+                });
 
-                document.getElementById('btnPlayAll').onclick = function() {{
+                document.getElementById('btnPlayAll').addEventListener('click', function() {
                     pod.play();
                     bgm.play();
-                }};
+                });
 
-                document.getElementById('btnPauseAll').onclick = function() {{
+                document.getElementById('btnPauseAll').addEventListener('click', function() {
                     pod.pause();
                     bgm.pause();
-                }};
+                });
 
-                document.getElementById('btnRestartAll').onclick = function() {{
+                document.getElementById('btnRestartAll').addEventListener('click', function() {
                     pod.currentTime = 0;
                     bgm.currentTime = 0;
                     pod.play();
                     bgm.play();
-                }};
+                });
             </script>
             """
-            st.html(mixer_markup)
+            mixer_html = template_html.replace("__B64_PODCAST__", b64_podcast).replace("__B64_MUSIC__", b64_music)
+            components.html(mixer_html, height=430)
 
 # ==========================================
 # PESTAÑA 4: GESTOR DE MÚSICA
