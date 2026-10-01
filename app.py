@@ -40,6 +40,18 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
 def generate_script(pdf_text: str, api_key: str) -> PodcastScript:
     genai.configure(api_key=api_key.strip())
     
+    # 1. Detectar automáticamente un modelo compatible con tu clave
+    available_models = [
+        m.name for m in genai.list_models() 
+        if "generateContent" in m.supported_generation_methods
+    ]
+    
+    if not available_models:
+        raise ValueError("No se encontraron modelos compatibles con esta clave API.")
+    
+    # Priorizar modelos flash o pro si existen en la lista, o tomar el primero disponible
+    chosen_model = next((m for m in available_models if "flash" in m), available_models[0])
+    
     cleaned = pdf_text[:100000]
     prompt = f"""
 {SYSTEM_PROMPT}
@@ -48,42 +60,23 @@ A continuación tienes el texto del artículo científico:
 {cleaned}
 
 Genera el guion estructurado estrictamente en formato JSON con las claves:
-- "title": (string)
+- "title": (string con el título del episodio)
 - "dialogue": lista de objetos con "speaker" ("ANA" o "DANI") y "text" (su intervención).
-No incluyas texto fuera del bloque JSON ni bloques de código markdown como ```json.
+No incluyas explicaciones adicionales, devuelve únicamente el bloque JSON.
 """
-    candidate_models = [
-        "models/gemini-1.5-flash-latest",
-        "gemini-1.5-flash-latest",
-        "models/gemini-1.5-flash",
-        "gemini-1.5-flash",
-        "models/gemini-1.5-pro-latest",
-        "gemini-pro"
-    ]
-    last_error = None
-
-    for m in candidate_models:
-        try:
-            model = genai.GenerativeModel(
-                model_name=m,
-                generation_config={"response_mime_type": "application/json"}
-            )
-            response = model.generate_content(prompt)
-            raw_text = response.text.strip()
-            if raw_text.startswith("```json"):
-                raw_text = raw_text[7:]
-            if raw_text.startswith("```"):
-                raw_text = raw_text[3:]
-            if raw_text.endswith("```"):
-                raw_text = raw_text[:-3]
-            
-            script_dict = json.loads(raw_text.strip())
-            return PodcastScript(**script_dict)
-        except Exception as e:
-            last_error = e
-            continue
-            
-    raise last_error
+    model = genai.GenerativeModel(model_name=chosen_model)
+    response = model.generate_content(prompt)
+    
+    raw_text = response.text.strip()
+    if raw_text.startswith("```json"):
+        raw_text = raw_text[7:]
+    if raw_text.startswith("```"):
+        raw_text = raw_text[3:]
+    if raw_text.endswith("```"):
+        raw_text = raw_text[:-3]
+    
+    script_dict = json.loads(raw_text.strip())
+    return PodcastScript(**script_dict)
 
 async def create_audio(dialogue: List[DialogueTurn], output_file: str):
     temp_files = []
@@ -162,7 +155,7 @@ music_file = st.file_uploader("Sube música de fondo opcional (MP3)", type=["mp3
 if st.session_state.audio_path and os.path.exists(st.session_state.audio_path):
     with open(st.session_state.audio_path, "rb") as f:
         audio_bytes = f.read()
-    
+
     st.write("**Audio del Podcast:**")
     st.audio(audio_bytes, format="audio/mp3")
     
