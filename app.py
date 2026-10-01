@@ -42,7 +42,7 @@ def generate_script(pdf_text: str, api_key: str) -> PodcastScript:
     client = genai.Client(api_key=api_key)
     cleaned = pdf_text[:120000]
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-1.5-flash",
         contents=f"Analiza este artículo y genera el guion para el podcast:\n\n{cleaned}",
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
@@ -77,7 +77,11 @@ async def create_audio(dialogue: List[DialogueTurn], output_file: str):
 st.title("🎙 Mente Digital")
 st.caption("Transforma artículos científicos en podcasts dialogados y rigurosos")
 
-api_key = os.getenv("GEMINI_API_KEY")
+# Lee la clave de Secrets de Streamlit o del entorno
+api_key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
+
+if not api_key:
+    api_key = st.text_input("Ingresa tu Gemini API Key:", type="password")
 
 pdf_file = st.file_uploader("Sube el artículo en PDF", type=["pdf"])
 
