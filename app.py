@@ -4,35 +4,70 @@ import json
 import asyncio
 import edge_tts
 import time
+import os
+import sqlite3
+from datetime import datetime
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 from typing import List
-import os
 
-st.set_page_config(page_title="Mente Digital - Podcast", layout="centered")
+st.set_page_config(page_title="Mente Digital", layout="wide", page_icon="🎙️️")
 
-# Estructura del guion
+# --- DIRECTORIOS Y BASE DE DATOS LOCAL ---
+DATA_DIR = "library_data"
+PDF_DIR = os.path.join(DATA_DIR, "pdfs")
+AUDIO_DIR = os.path.join(DATA_DIR, "audios")
+MUSIC_DIR = os.path.join(DATA_DIR, "music")
+
+for d in [PDF_DIR, AUDIO_DIR, MUSIC_DIR]:
+    os.makedirs(d, exist_ok=True)
+
+def get_db():
+    conn = sqlite3.connect(os.path.join(DATA_DIR, "library.db"))
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS episodes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            date TEXT,
+            pdf_path TEXT,
+            audio_path TEXT,
+            transcript_json TEXT
+        )
+    """)
+    conn.commit()
+    return conn
+
+# --- MODELOS DE DATOS ---
 class DialogueTurn(BaseModel):
-    speaker: str = Field(description="Nombre del hablante: 'ANA' o 'DANI'")
-    text: str = Field(description="Intervención hablada de este turno")
+    speaker: str = Field(description="'ANA' o 'DANI'")
+    text: str = Field(description="Intervención natural, conversacional y explicativa")
 
 class PodcastScript(BaseModel):
-    title: str = Field(description="Título riguroso del episodio")
-    dialogue: List[DialogueTurn] = Field(description="Secuencia ordenada del diálogo")
+    title: str = Field(description="Título exacto del episodio")
+    dialogue: List[DialogueTurn] = Field(description="Secuencia del podcast")
 
+# --- PROMPT METODOLÓGICO DERIVADO DEL EJEMPLO ---
 SYSTEM_PROMPT = """
-Eres un guionista científico experto para el podcast 'Mente Digital'. 
-Tu objetivo es transformar artículos académicos en una conversación amena, fluida pero estrictamente rigurosa y fiel a los datos del artículo, protagonizada por dos conductores:
-- ANA: Conduce el programa, hace las preguntas clave que se haría el oyente y plantea objeciones lógicas.
-- DANI: Analista metodológico que ha leído el artículo, explica los datos, matiza los hallazgos y frena las conclusiones apresuradas.
+Eres el guionista principal del podcast científico 'Mente Digital'. 
+Tu objetivo es analizar un artículo científico empírico y convertirlo en un diálogo divulgativo, riguroso, pausado y profundamente analítico entre:
+- ANA: Conduce el programa. Hace preguntas inteligentes, pide la 'versión corta', señala las implicaciones prácticas y resume los puntos clave con sentido común.
+- DANI: Analista metodológico. Lee la letra pequeña, desglosa la muestra, contextualiza los datos (explica qué significa un tamaño de efecto pequeño, por qué una muestra grande influye en la significación, advierte de solapamientos entre preguntas y desmitifica los titulares sensacionalistas).
 
-REGLAS OBLIGATORIAS:
-1. RIGOR ESTADÍSTICO: No confundas correlación o asociación con causalidad. Si el diseño es transversal o correlacional, Dani debe recalcarlo.
-2. TAMAÑOS DE EFECTO: Menciona tamaños de efecto (d de Cohen, betas, OR, r) y matiza si los efectos son pequeños, moderados o si alcanzan relevancia clínica.
-3. LIMITACIONES: No omitas sesgos de selección, tipos de medida o limitaciones de las escalas.
-4. HONESTIDAD: No inventes construcciones que el paper no midió.
-5. CIERRE: Recuerda siempre que ante problemas reales de salud mental, el apoyo profesional y humano es prioritario.
+ESTRUCTURA OBLIGATORIA DEL DIÁLOGO (sigue este orden y ritmo):
+1. Apertura: Bienvenida, presentación del tema actual, ficha del estudio (autores, revista, muestra general) y la 'versión corta' inicial sin tecnicismos exagerados.
+2. Por qué este estudio: Qué hueco llena, en qué contexto geográfico/social se hace, y aclaración conceptual de las variables delicadas (ej. si 'adicción' o 'dependencia' se mide como continuo y no como diagnóstico clínico).
+3. Cómo se hizo (Metodología): Procedimiento de recogida, filtros de calidad (preguntas trampa, tiempos de respuesta), tasa de respuesta, tamaño de grupos y diferencias sociodemográficas de partida (edad, ocupación, sesgos del panel). Definición operativa de qué se considera 'usuario'.
+4. Comparaciones principales (Usuarios vs No usuarios): Diferencias estadísticas encontradas acompañadas obligatoriamente de sus tamaños del efecto (d de Cohen, etc.). Explicación de cómo las muestras grandes facilitan la significación estadística. Advertencia de correlación vs causalidad (diseño transversal).
+5. Desglose detallado de motivos / predictores: Qué conductas son las más comunes y cuáles son minoritarias. Qué variables correlacionan más fuerte con el problema y posibles solapamientos metodológicos en las preguntas. Predictores estadísticos en regresión.
+6. Modelos estadísticos avanzados (Mediación / Moderación si los hay): Explicación clara de si la variable puente explica total o parcialmente el efecto, patrones atípicos (supresión, mediaciones inconsistentes) y advertencia de que la mediación estadística en datos transversales no prueba causa. Mecanismo teórico propuesto por los autores.
+7. Limitaciones y Fortalezas: Desglose punto por punto de las costuras del estudio (medidas ultracortas, autoinforme, sesgo de deseabilidad, representatividad) y sus méritos metodológicos.
+8. Qué podemos llevarnos y Cierre: Aplicación práctica sensata, el titular que NO se debe dar a la prensa, recordatorio ético de que la tecnología o los tests no sustituyen el apoyo profesional/humano cualificado, y despedida.
+
+ESTILO:
+- Tono coloquial pero técnicamente impecable (hablado, natural, sin rodeos artificiales).
+- No uses tecnicismos sin explicarlos brevemente (ej. si dices "supresión" o "d de Cohen", Dani lo aterriza con un ejemplo).
 """
 
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:
@@ -41,7 +76,7 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
 
 def generate_script(pdf_text: str, api_key: str) -> PodcastScript:
     client = genai.Client(api_key=api_key.strip())
-    cleaned = pdf_text[:80000]
+    cleaned = pdf_text[:90000]
     
     prompt = f"""
 {SYSTEM_PROMPT}
@@ -49,17 +84,14 @@ def generate_script(pdf_text: str, api_key: str) -> PodcastScript:
 A continuación tienes el texto del artículo científico:
 {cleaned}
 
-Genera el guion estructurado estrictamente en formato JSON con las claves:
-- "title": (string con el título del episodio)
-- "dialogue": lista de objetos con "speaker" ("ANA" o "DANI") y "text" (su intervención).
-No incluyas explicaciones adicionales, devuelve únicamente el bloque JSON.
+Genera el guion estructurado estrictamente en formato JSON con:
+- "title": (string)
+- "dialogue": lista de turnos [{"speaker": "ANA"|"DANI", "text": "..."}]
 """
-    # Lista de modelos: si 3.8 está saturado (503), recurre a 3.5-flash-lite
     candidate_models = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
     last_error = None
 
     for model_name in candidate_models:
-        # Hasta 3 reintentos por modelo ante picos de demanda (503)
         for attempt in range(3):
             try:
                 response = client.models.generate_content(
@@ -80,16 +112,13 @@ No incluyas explicaciones adicionales, devuelve únicamente el bloque JSON.
                 
                 script_dict = json.loads(raw_text.strip())
                 return PodcastScript(**script_dict)
-
             except Exception as e:
                 last_error = e
-                # Si es saturación (503 UNAVAILABLE), esperar brevemente y reintentar
                 if "503" in str(e) or "UNAVAILABLE" in str(e):
                     time.sleep(2 * (attempt + 1))
                     continue
                 else:
                     break
-
     raise last_error
 
 async def create_audio(dialogue: List[DialogueTurn], output_file: str):
@@ -98,7 +127,7 @@ async def create_audio(dialogue: List[DialogueTurn], output_file: str):
     try:
         for idx, turn in enumerate(dialogue):
             voice = voice_map.get(turn.speaker.upper(), "es-ES-AlvaroNeural")
-            temp_name = f"temp_{idx}.mp3"
+            temp_name = f"temp_{idx}_{int(time.time())}.mp3"
             comm = edge_tts.Communicate(turn.text, voice)
             await comm.save(temp_name)
             temp_files.append(temp_name)
@@ -112,9 +141,8 @@ async def create_audio(dialogue: List[DialogueTurn], output_file: str):
             if os.path.exists(tf):
                 os.remove(tf)
 
-# Interfaz visual
-st.title("🎙 Mente Digital")
-st.caption("Transforma artículos científicos en podcasts dialogados y rigurosos")
+# --- NAVEGACIÓN PRINCIPAL ---
+tab_generator, tab_library = st.tabs(["🚀 Crear Nuevo Episodio", "📚 Biblioteca de Episodios y Música"])
 
 api_key = None
 try:
@@ -126,60 +154,130 @@ except Exception:
 if not api_key:
     api_key = os.getenv("GEMINI_API_KEY")
 
-user_key = st.text_input("Gemini API Key (déjalo vacío si ya lo pusiste en Secrets):", type="password")
-if user_key:
-    api_key = user_key
+# ==========================================
+# PESTAÑA 1: GENERADOR
+# ==========================================
+with tab_generator:
+    st.header("Generador de Podcasts Científicos")
+    
+    user_key = st.text_input("Gemini API Key (si no está configurada en Secrets):", type="password")
+    if user_key:
+        api_key = user_key
 
-pdf_file = st.file_uploader("Sube el artículo en PDF", type=["pdf"])
+    uploaded_pdf = st.file_uploader("Sube el artículo en PDF", type=["pdf"])
 
-if "script" not in st.session_state:
-    st.session_state.script = None
-if "audio_path" not in st.session_state:
-    st.session_state.audio_path = None
-
-if pdf_file and api_key:
-    if st.button("Generar Podcast"):
-        try:
-            with st.spinner("Leyendo artículo y redactando guion..."):
-                text = extract_text_from_pdf(pdf_file.read())
-                st.session_state.script = generate_script(text, api_key)
+    if uploaded_pdf and api_key:
+        if st.button("Generar y Guardar en Biblioteca"):
+            timestamp = int(time.time())
+            pdf_filename = f"paper_{timestamp}.pdf"
+            pdf_save_path = os.path.join(PDF_DIR, pdf_filename)
             
-            with st.spinner("Sintetizando voces de Ana y Dani..."):
-                audio_path = "podcast_generado.mp3"
-                asyncio.run(create_audio(st.session_state.script.dialogue, audio_path))
-                st.session_state.audio_path = audio_path
-            st.success("¡Podcast generado con éxito!")
-        except Exception as e:
-            st.error(f"Error al procesar: {e}")
+            with open(pdf_save_path, "wb") as f:
+                f.write(uploaded_pdf.getbuffer())
 
-elif not api_key:
-    st.warning("Por favor, introduce tu Gemini API Key arriba o configúrala en los Secrets.")
+            try:
+                with st.spinner("1/2: Analizando metodología y estructurando diálogo..."):
+                    pdf_text = extract_text_from_pdf(open(pdf_save_path, "rb").read())
+                    script_obj = generate_script(pdf_text, api_key)
+                
+                with st.spinner("2/2: Sintetizando voces de Ana y Dani..."):
+                    audio_filename = f"podcast_{timestamp}.mp3"
+                    audio_save_path = os.path.join(AUDIO_DIR, audio_filename)
+                    asyncio.run(create_audio(script_obj.dialogue, audio_save_path))
 
-if st.session_state.script:
-    st.subheader(st.session_state.script.title)
-    with st.expander("Ver transcripción completa"):
-        for turn in st.session_state.script.dialogue:
-            st.markdown(f"**{turn.speaker}:** {turn.text}")
+                # Guardar en SQLite
+                conn = get_db()
+                c = conn.cursor()
+                c.execute("""
+                    INSERT INTO episodes (title, date, pdf_path, audio_path, transcript_json)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    script_obj.title,
+                    datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    pdf_save_path,
+                    audio_save_path,
+                    script_obj.model_dump_json()
+                ))
+                conn.commit()
+                conn.close()
 
-st.divider()
-st.subheader("Reproductor y Ajustes de Audio")
+                st.success("¡Episodio creado y guardado en tu biblioteca!")
+                st.subheader(script_obj.title)
+                st.audio(audio_save_path, format="audio/mp3")
+                
+                with st.expander("Ver transcripción completa"):
+                    for turn in script_obj.dialogue:
+                        st.markdown(f"**{turn.speaker}:** {turn.text}")
 
-music_file = st.file_uploader("Sube música de fondo opcional (MP3)", type=["mp3"])
+            except Exception as e:
+                st.error(f"Error durante el proceso: {e}")
 
-if st.session_state.audio_path and os.path.exists(st.session_state.audio_path):
-    with open(st.session_state.audio_path, "rb") as f:
-        audio_bytes = f.read()
+# ==========================================
+# PESTAÑA 2: BIBLIOTECA
+# ==========================================
+with tab_library:
+    st.header("Biblioteca Permanente")
     
-    st.write("**Audio del Podcast:**")
-    st.audio(audio_bytes, format="audio/mp3")
-    
-    st.download_button(
-        label="Descargar Podcast en MP3",
-        data=audio_bytes,
-        file_name="mente_digital_episodio.mp3",
-        mime="audio/mpeg"
-    )
+    col_episodes, col_music = st.columns([2, 1])
 
-if music_file:
-    st.write("**Música de fondo:**")
-    st.audio(music_file.read(), format="audio/mp3")
+    with col_episodes:
+        st.subheader("📻 Episodios Guardados")
+        conn = get_db()
+        episodes = conn.execute("SELECT id, title, date, pdf_path, audio_path, transcript_json FROM episodes ORDER BY id DESC").fetchall()
+        conn.close()
+
+        if not episodes:
+            st.info("Aún no tienes episodios guardados. Genera uno en la otra pestaña.")
+        else:
+            for ep_id, ep_title, ep_date, ep_pdf, ep_audio, ep_json in episodes:
+                with st.container():
+                    st.markdown(f"### {ep_title}")
+                    st.caption(f"Fecha de creación: {ep_date}")
+                    
+                    if os.path.exists(ep_audio):
+                        st.audio(ep_audio, format="audio/mp3")
+                        with open(ep_audio, "rb") as af:
+                            st.download_button(
+                                label="⬇️ Descargar Audio MP3",
+                                data=af.read(),
+                                file_name=os.path.basename(ep_audio),
+                                mime="audio/mpeg",
+                                key=f"dl_audio_{ep_id}"
+                            )
+
+                    with st.expander("📄 Ver Transcripción"):
+                        dialogue_data = json.loads(ep_json)
+                        for turn in dialogue_data.get("dialogue", []):
+                            st.markdown(f"**{turn['speaker']}:** {turn['text']}")
+
+                    if os.path.exists(ep_pdf):
+                        with open(ep_pdf, "rb") as pf:
+                            st.download_button(
+                                label="📑 Descargar PDF original",
+                                data=pf.read(),
+                                file_name=os.path.basename(ep_pdf),
+                                mime="application/pdf",
+                                key=f"dl_pdf_{ep_id}"
+                            )
+                    st.divider()
+
+    with col_music:
+        st.subheader("🎵 Pistas de Música")
+        uploaded_music = st.file_uploader("Subir nueva pista de fondo (MP3)", type=["mp3"], key="music_uploader")
+        
+        if uploaded_music:
+            music_target = os.path.join(MUSIC_DIR, uploaded_music.name)
+            with open(music_target, "wb") as f:
+                f.write(uploaded_music.getbuffer())
+            st.success(f"Pista '{uploaded_music.name}' guardada.")
+
+        # Listar música guardada
+        saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.endswith(".mp3")]
+        if saved_tracks:
+            st.write("**Música disponible:**")
+            for track in saved_tracks:
+                st.write(f"🔊 {track}")
+                track_path = os.path.join(MUSIC_DIR, track)
+                st.audio(track_path, format="audio/mp3")
+        else:
+            st.info("No hay música subida todavía.")
