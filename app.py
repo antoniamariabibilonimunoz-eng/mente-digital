@@ -12,7 +12,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 from typing import List
 
-st.set_page_config(page_title="Mente Digital", layout="wide", page_icon="🎙️️")
+st.set_page_config(page_title="Mente Digital", layout="wide", page_icon="🎙")
 
 # --- DIRECTORIOS Y BASE DE DATOS LOCAL ---
 DATA_DIR = "library_data"
@@ -141,9 +141,7 @@ async def create_audio(dialogue: List[DialogueTurn], output_file: str):
             if os.path.exists(tf):
                 os.remove(tf)
 
-# --- NAVEGACIÓN PRINCIPAL ---
-tab_generator, tab_library = st.tabs(["🚀 Crear Nuevo Episodio", "📚 Biblioteca de Episodios y Música"])
-
+# --- OBTENCIÓN AUTOMÁTICA DE API KEY ---
 api_key = None
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -154,16 +152,18 @@ except Exception:
 if not api_key:
     api_key = os.getenv("GEMINI_API_KEY")
 
+# --- NAVEGACIÓN PRINCIPAL ---
+tab_generator, tab_library = st.tabs(["🚀 Crear Nuevo Episodio", "📚 Biblioteca de Episodios y Música"])
+
 # ==========================================
 # PESTAÑA 1: GENERADOR
 # ==========================================
 with tab_generator:
     st.header("Generador de Podcasts Científicos")
     
-    user_key = st.text_input("Gemini API Key (si no está configurada en Secrets):", type="password")
-    if user_key:
-        api_key = user_key
-
+    if not api_key:
+        st.error("Falta configurar 'GEMINI_API_KEY' en los Secrets de Streamlit.")
+    
     uploaded_pdf = st.file_uploader("Sube el artículo en PDF", type=["pdf"])
 
     if uploaded_pdf and api_key:
@@ -271,7 +271,6 @@ with tab_library:
                 f.write(uploaded_music.getbuffer())
             st.success(f"Pista '{uploaded_music.name}' guardada.")
 
-        # Listar música guardada
         saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.endswith(".mp3")]
         if saved_tracks:
             st.write("**Música disponible:**")
