@@ -1,10 +1,12 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import json
 import asyncio
 import edge_tts
 import time
 import os
 import sqlite3
+import base64
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -25,6 +27,17 @@ for d in [PDF_DIR, AUDIO_DIR, MUSIC_DIR]:
 def get_db():
     conn = sqlite3.connect(os.path.join(DATA_DIR, "library.db"))
     c = conn.cursor()
+    # Tabla de PDFs almacenados
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS uploaded_papers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT,
+            filepath TEXT,
+            upload_date TEXT,
+            status TEXT DEFAULT 'pending'
+        )
+    """)
+    # Tabla de episodios generados
     c.execute("""
         CREATE TABLE IF NOT EXISTS episodes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,6 +50,15 @@ def get_db():
     """)
     conn.commit()
     return conn
+
+def delete_uploaded_paper(paper_id: int, filepath: str):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM uploaded_papers WHERE id = ?", (paper_id,))
+    conn.commit()
+    conn.close()
+    if os.path.exists(filepath):
+        os.remove(filepath)
 
 def delete_episode(ep_id: int, pdf_path: str, audio_path: str):
     conn = get_db()
@@ -68,20 +90,20 @@ Eres el guionista principal del podcast científico 'Mente Digital'.
 Tu objetivo es analizar minuciosamente artículos empíricos de investigación y transformarlos en un guion dialogado riguroso, pausado, sobrio y de alto nivel metodológico entre dos conductores:
 
 - ANA: Conductora e inquisidora metodológica. Hace preguntas incisivas, pide la 'versión corta', señala las implicaciones prácticas, cuestiona los p-valores en muestras grandes y frena los titulares sensacionalistas.
-- DANI: Analista metodológico. Desmenuza la letra pequeña del paper: cita pruebas concretas (MANCOVA, regresiones, mediaciones Process), extrae estadísticos exactos (d de Cohen, betas, correlaciones, tamaños de muestra, eta cuadrado parcial), nombra las escalas psicométricas utilizadas, identifica solapamientos de ítems y desmonta interpretaciones causales precipitadas.
+- DANI: Analista metodológico. Desmenuza la letra pequeña del paper: cita pruebas concretas (MANCOVA, regresiones, mediaciones Process, análisis cualitativo temático reflexivo), extrae estadísticos exactos (d de Cohen, betas, correlaciones, tamaños de muestra, eta cuadrado parcial), nombra las escalas psicométricas utilizadas, identifica solapamientos de ítems y desmonta interpretaciones causales precipitadas.
 
 REGLAS DE FORMATO Y ESTILO:
 1. Diálogo orgánico sin fórmulas teatrales: Prohibidas frases clichés como "¡Qué fascinante!", "¡Cuéntanos Dani!", "¡Así es, amigos!". El diálogo debe sonar a dos expertos dialogando con rigor y naturalidad.
-2. Profundidad explicativa: Ana realiza intervenciones concisas y afiladas; Dani tiene espacio para desarrollar explicaciones completas cuando la estadística lo exija.
-3. Precisión de microdatos: Extrae filtros de calidad exactos (tiempos mínimos de respuesta, preguntas de atención), asimetrías sociodemográficas entre grupos, distribuciones porcentuales de uso, instrumentos específicos de medida y modelos de mediación (distinguiendo mediación total, parcial o efectos de supresión).
+2. Profundidad explicativa: Ana realiza intervenciones concisas y afiladas; Dani tiene espacio para desarrollar explicaciones completas cuando la metodología lo exija.
+3. Precisión de microdatos: Extrae filtros de calidad exactos (tiempos mínimos de respuesta, preguntas de atención), asimetrías sociodemográficas entre grupos, distribuciones de uso, instrumentos específicos de medida y modelos de mediación o temas cualitativos.
 4. El guion debe estructurarse obligatoriamente siguiendo estos 8 bloques:
    - Apertura (Bienvenida, ficha del estudio y versión corta).
    - Por qué este estudio (Hueco en la literatura, contexto cultural y delimitación conceptual del constructo medido).
-   - Cómo se hizo (Muestra, cribado de calidad, tasas de respuesta, diferencias sociodemográficas de partida y definición operativa de usuario).
-   - Comparación principal (Resultados estadísticos vs tamaños de efecto, muestra grande y correlación vs causalidad).
-   - Desglose de motivos / Predictores (Conductas comunes vs minoritarias, análisis de regresión, pesos de predictores y análisis de solapamiento de ítems).
-   - Modelos estadísticos avanzados (Mediaciones, si son parciales o totales, supresión estadística y el mecanismo teórico propuesto).
-   - Límites (Costuras del estudio: medidas ultracortas, autoinforme, sesgos) y fortalezas objetivas.
+   - Cómo se hizo (Muestra, cribado de calidad, tasas de respuesta, diferencias sociodemográficas de partida y definición operativa de usuario/participante).
+   - Comparación o hallazgos principales (Resultados estadísticos vs tamaños de efecto / temas cualitativos con recuentos descriptivos).
+   - Desglose de motivos / Predictores / Subtemas analíticos.
+   - Modelos estadísticos avanzados o interpretaciones profundas.
+   - Límites (Costuras del estudio: medidas ultracortas, autoinforme, sesgos, transferibilidad) y fortalezas objetivas.
    - Qué podemos llevarnos (Titular a evitar en la prensa, aplicación práctica prudente y cierre ético de salud mental).
 """
 
@@ -169,75 +191,114 @@ if not api_key:
     api_key = os.getenv("GEMINI_API_KEY")
 
 # --- INTERFAZ PRINCIPAL ---
-tab_generator, tab_library, tab_player, tab_music = st.tabs([
-    "🚀 Crear Episodio", 
+tab_papers, tab_library, tab_mixer, tab_music = st.tabs([
+    "📥 Mis Papers (Subir y Procesar)", 
     "📻 Biblioteca de Episodios",
-    "🎧 Reproductor de Estudio (Podcast + Música)",
+    "🎛️ Mezclador de Estudio (Móvil & PC)",
     "🎵 Gestor de Música"
 ])
 
 # ==========================================
-# PESTAÑA 1: CREAR EPISODIO
+# PESTAÑA 1: GESTOR DE PAPERS (SUBIDA MÚLTIPLE)
 # ==========================================
-with tab_generator:
-    st.header("Generador de Podcasts Científicos")
+with tab_papers:
+    st.header("Almacén de Artículos Científicos")
     
     if not api_key:
         st.error("No se detectó 'GEMINI_API_KEY' en los Secrets de Streamlit.")
+
+    st.write("Sube uno o varios PDFs a la vez. Se guardarán en tu almacén y podrás generar los episodios uno por uno cuando quieras.")
     
-    uploaded_pdf = st.file_uploader("Sube el artículo académico (PDF)", type=["pdf"])
+    uploaded_files = st.file_uploader(
+        "Arrastra o selecciona tus archivos PDF", 
+        type=["pdf"], 
+        accept_multiple_files=True, 
+        key="batch_pdf_uploader"
+    )
 
-    if uploaded_pdf and api_key:
-        if st.button("Generar y Guardar en Biblioteca"):
-            timestamp = int(time.time())
-            pdf_bytes = uploaded_pdf.read()
-            pdf_filename = f"paper_{timestamp}.pdf"
-            pdf_save_path = os.path.join(PDF_DIR, pdf_filename)
+    if uploaded_files:
+        conn = get_db()
+        c = conn.cursor()
+        saved_count = 0
+        for uploaded_file in uploaded_files:
+            timestamp = int(time.time() * 1000)
+            safe_name = f"{timestamp}_{uploaded_file.name}"
+            pdf_path = os.path.join(PDF_DIR, safe_name)
             
-            with open(pdf_save_path, "wb") as f:
-                f.write(pdf_bytes)
-
-            try:
-                with st.spinner("1/2: Analizando artículo completo y tablas estadísticas..."):
-                    script_obj = generate_script_from_pdf(pdf_bytes, api_key)
+            with open(pdf_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
                 
-                with st.spinner("2/2: Sintetizando voces de Ana y Dani..."):
-                    audio_filename = f"podcast_{timestamp}.mp3"
-                    audio_save_path = os.path.join(AUDIO_DIR, audio_filename)
-                    asyncio.run(create_audio(script_obj.dialogue, audio_save_path))
+            c.execute("""
+                INSERT INTO uploaded_papers (filename, filepath, upload_date, status)
+                VALUES (?, ?, ?, ?)
+            """, (uploaded_file.name, pdf_path, datetime.now().strftime("%Y-%m-%d %H:%M"), "ready"))
+            saved_count += 1
+        conn.commit()
+        conn.close()
+        st.success(f"Se han subido y guardado {saved_count} artículo(s) correctamente.")
+        st.rerun()
 
-                # Guardar en SQLite
-                conn = get_db()
-                c = conn.cursor()
-                c.execute("""
-                    INSERT INTO episodes (title, date, pdf_path, audio_path, transcript_json)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (
-                    script_obj.title,
-                    datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    pdf_save_path,
-                    audio_save_path,
-                    script_obj.model_dump_json()
-                ))
-                conn.commit()
-                conn.close()
+    st.divider()
+    st.subheader("📚 Artículos Listos para Procesar")
+    
+    conn = get_db()
+    papers = conn.execute("SELECT id, filename, filepath, upload_date FROM uploaded_papers ORDER BY id DESC").fetchall()
+    conn.close()
 
-                st.success("¡Episodio generado y guardado en tu biblioteca!")
-                st.subheader(script_obj.title)
-                st.audio(audio_save_path, format="audio/mp3")
-                
-                with st.expander("Ver transcripción completa"):
-                    for turn in script_obj.dialogue:
-                        st.markdown(f"**{turn.speaker}:** {turn.text}")
+    if not papers:
+        st.info("No tienes ningún artículo subido en el almacén todavía.")
+    else:
+        for p_id, p_name, p_path, p_date in papers:
+            with st.container():
+                col_txt, col_action, col_del = st.columns([3, 1.5, 0.8])
+                with col_txt:
+                    st.write(f"📄 **{p_name}**")
+                    st.caption(f"Subido el: {p_date}")
+                with col_action:
+                    if st.button("🎙️ Generar Podcast", key=f"btn_gen_{p_id}", disabled=not api_key):
+                        with open(p_path, "rb") as f:
+                            pdf_bytes = f.read()
 
-            except Exception as e:
-                st.error(f"Error durante el proceso: {e}")
+                        try:
+                            with st.spinner("1/2: Analizando artículo y tablas estadísticas..."):
+                                script_obj = generate_script_from_pdf(pdf_bytes, api_key)
+                            
+                            with st.spinner("2/2: Sintetizando voces de Ana y Dani..."):
+                                audio_filename = f"podcast_{int(time.time())}.mp3"
+                                audio_save_path = os.path.join(AUDIO_DIR, audio_filename)
+                                asyncio.run(create_audio(script_obj.dialogue, audio_save_path))
+
+                            # Guardar en SQLite
+                            conn = get_db()
+                            c = conn.cursor()
+                            c.execute("""
+                                INSERT INTO episodes (title, date, pdf_path, audio_path, transcript_json)
+                                VALUES (?, ?, ?, ?, ?)
+                            """, (
+                                script_obj.title,
+                                datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                p_path,
+                                audio_save_path,
+                                script_obj.model_dump_json()
+                            ))
+                            conn.commit()
+                            conn.close()
+
+                            st.success(f"¡Episodio '{script_obj.title}' creado y guardado en la Biblioteca!")
+                            st.audio(audio_save_path, format="audio/mp3")
+                        except Exception as e:
+                            st.error(f"Error procesando '{p_name}': {e}")
+                with col_del:
+                    if st.button("🗑️", key=f"btn_del_paper_{p_id}"):
+                        delete_uploaded_paper(p_id, p_path)
+                        st.rerun()
+                st.divider()
 
 # ==========================================
 # PESTAÑA 2: BIBLIOTECA DE EPISODIOS
 # ==========================================
 with tab_library:
-    st.header("Episodios Guardados")
+    st.header("Episodios Generados")
     conn = get_db()
     episodes = conn.execute("SELECT id, title, date, pdf_path, audio_path, transcript_json FROM episodes ORDER BY id DESC").fetchall()
     conn.close()
@@ -254,7 +315,7 @@ with tab_library:
                 with col_del:
                     if st.button("🗑️ Eliminar", key=f"del_btn_{ep_id}"):
                         delete_episode(ep_id, ep_pdf, ep_audio)
-                        st.warning(f"Episodio eliminado.")
+                        st.warning("Episodio eliminado.")
                         st.rerun()
 
                 if os.path.exists(ep_audio):
@@ -285,11 +346,11 @@ with tab_library:
                 st.divider()
 
 # ==========================================
-# PESTAÑA 3: REPRODUCTOR COMBINADO
+# PESTAÑA 3: MEZCLADOR INDEPENDIENTE (MÓVIL & PC)
 # ==========================================
-with tab_player:
-    st.header("🎧 Estudio de Reproducción Combinada")
-    st.write("Escucha cualquier episodio de tu biblioteca junto a una pista de fondo musical.")
+with tab_mixer:
+    st.header("🎛️ Mezclador de Estudio con Control de Volumen Individual")
+    st.write("Ajusta de forma táctil el volumen exacto de la voz del podcast y de la música de fondo en cualquier teléfono o pantalla.")
 
     conn = get_db()
     episodes = conn.execute("SELECT id, title, audio_path FROM episodes ORDER BY id DESC").fetchall()
@@ -298,37 +359,98 @@ with tab_player:
     saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.lower().endswith(".mp3")]
 
     if not episodes:
-        st.warning("No hay episodios disponibles. Genera uno en la primera pestaña.")
+        st.warning("No hay episodios generados. Elige un PDF en la primera pestaña para crear uno.")
     elif not saved_tracks:
-        st.warning("No hay pistas de música subidas. Sube una en el 'Gestor de Música'.")
+        st.warning("No hay pistas de música de fondo. Sube alguna en el 'Gestor de Música'.")
     else:
         ep_dict = {f"[{ep[0]}] {ep[1]}": ep[2] for ep in episodes}
-        selected_ep_label = st.selectbox("Selecciona el Episodio:", list(ep_dict.keys()))
-        selected_track = st.selectbox("Selecciona la Música de Fondo:", saved_tracks)
+        selected_ep_label = st.selectbox("1. Selecciona el Episodio:", list(ep_dict.keys()), key="mix_ep")
+        selected_track = st.selectbox("2. Selecciona la Música de Fondo:", saved_tracks, key="mix_bgm")
 
-        st.divider()
+        ep_audio_file = ep_dict[selected_ep_label]
+        track_audio_file = os.path.join(MUSIC_DIR, selected_track)
 
-        col_pod, col_bgm = st.columns(2)
-        with col_pod:
-            st.markdown("### 🎙️ Voz del Podcast")
-            st.write(f"**Episodio:** {selected_ep_label}")
-            ep_audio_file = ep_dict[selected_ep_label]
-            if os.path.exists(ep_audio_file):
-                st.audio(ep_audio_file, format="audio/mp3")
+        if os.path.exists(ep_audio_file) and os.path.exists(track_audio_file):
+            with open(ep_audio_file, "rb") as f_ep:
+                b64_podcast = base64.b64encode(f_ep.read()).decode()
+            with open(track_audio_file, "rb") as f_bg:
+                b64_music = base64.b64encode(f_bg.read()).decode()
 
-        with col_bgm:
-            st.markdown("### 🎵 Música de Fondo")
-            st.write(f"**Pista:** {selected_track}")
-            track_audio_file = os.path.join(MUSIC_DIR, selected_track)
-            if os.path.exists(track_audio_file):
-                st.audio(track_audio_file, format="audio/mp3")
+            mixer_html = f"""
+            <div style="background-color: #1a1c24; padding: 20px; border-radius: 12px; color: #ffffff; font-family: sans-serif;">
+                <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                    <button id="btnPlayAll" style="flex: 1; padding: 14px; font-size: 16px; font-weight: bold; background-color: #00c853; color: white; border: none; border-radius: 8px; cursor: pointer;">▶ Reproducir Ambos</button>
+                    <button id="btnPauseAll" style="flex: 1; padding: 14px; font-size: 16px; font-weight: bold; background-color: #d50000; color: white; border: none; border-radius: 8px; cursor: pointer;">⏸ Pausar</button>
+                    <button id="btnRestartAll" style="flex: 0.6; padding: 14px; font-size: 16px; font-weight: bold; background-color: #424242; color: white; border: none; border-radius: 8px; cursor: pointer;">⏮ Inicio</button>
+                </div>
+
+                <div style="background: #262936; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span style="font-weight: bold;">🎙️ Volumen Podcast (Voz)</span>
+                        <span id="txtPodVol" style="color: #00e5ff;">100%</span>
+                    </div>
+                    <input type="range" id="sliderPod" min="0" max="1" step="0.01" value="1.0" style="width: 100%; height: 10px; accent-color: #00e5ff; cursor: pointer;">
+                    <audio id="audioPodcast" src="data:audio/mp3;base64,{b64_podcast}" controls style="width: 100%; margin-top: 10px;"></audio>
+                </div>
+
+                <div style="background: #262936; padding: 15px; border-radius: 8px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span style="font-weight: bold;">🎵 Volumen Música de Fondo</span>
+                        <span id="txtBgVol" style="color: #ff4081;">20%</span>
+                    </div>
+                    <input type="range" id="sliderBg" min="0" max="1" step="0.01" value="0.20" style="width: 100%; height: 10px; accent-color: #ff4081; cursor: pointer;">
+                    <audio id="audioMusic" src="data:audio/mp3;base64,{b64_music}" loop controls style="width: 100%; margin-top: 10px;"></audio>
+                </div>
+            </div>
+
+            <script>
+                const pod = document.getElementById('audioPodcast');
+                const bgm = document.getElementById('audioMusic');
+                const sPod = document.getElementById('sliderPod');
+                const sBg = document.getElementById('sliderBg');
+                const tPod = document.getElementById('txtPodVol');
+                const tBg = document.getElementById('txtBgVol');
+
+                // Volúmenes iniciales (música calibrada al 20% para no pisar la voz)
+                pod.volume = 1.0;
+                bgm.volume = 0.20;
+
+                sPod.addEventListener('input', (e) => {{
+                    pod.volume = parseFloat(e.target.value);
+                    tPod.innerText = Math.round(e.target.value * 100) + '%';
+                }});
+
+                sBg.addEventListener('input', (e) => {{
+                    bgm.volume = parseFloat(e.target.value);
+                    tBg.innerText = Math.round(e.target.value * 100) + '%';
+                }});
+
+                document.getElementById('btnPlayAll').addEventListener('click', () => {{
+                    pod.play();
+                    bgm.play();
+                }});
+
+                document.getElementById('btnPauseAll').addEventListener('click', () => {{
+                    pod.pause();
+                    bgm.pause();
+                }});
+
+                document.getElementById('btnRestartAll').addEventListener('click', () => {{
+                    pod.currentTime = 0;
+                    bgm.currentTime = 0;
+                    pod.play();
+                    bgm.play();
+                }});
+            </script>
+            """
+            components.html(mixer_html, height=430)
 
 # ==========================================
 # PESTAÑA 4: GESTOR DE MÚSICA
 # ==========================================
 with tab_music:
     st.header("Pistas de Música de Fondo")
-    uploaded_music = st.file_uploader("Selecciona un archivo MP3 para añadir a la colección", type=["mp3"], key="uploader_music")
+    uploaded_music = st.file_uploader("Subir nueva pista MP3", type=["mp3"], key="uploader_music")
     if uploaded_music is not None:
         target_path = os.path.join(MUSIC_DIR, uploaded_music.name)
         if not os.path.exists(target_path):
