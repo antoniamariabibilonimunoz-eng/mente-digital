@@ -30,7 +30,7 @@ INDEX_FILE = os.path.join(DATA_DIR, "library_index.json")
 for d in [DATA_DIR, PDF_DIR, AUDIO_DIR, MUSIC_DIR]:
     os.makedirs(d, exist_ok=True)
 
-# --- GESTOR JSON (CERO BLOQUEOS) ---
+# --- GESTOR JSON (CERO BLOQUEOS DE BASE DE DATOS) ---
 def load_episodes() -> list:
     if not os.path.exists(INDEX_FILE):
         return []
@@ -85,25 +85,26 @@ class PodcastScript(BaseModel):
     title: str = Field(description="Título exacto del episodio")
     dialogue: List[DialogueTurn] = Field(description="Secuencia del podcast")
 
+# --- PROMPT CALIBRADO: MENOS CIFRAS EN CRUDO, MÁS TRADUCCIÓN INTERPRETATIVA ---
 SYSTEM_PROMPT = """
 Eres el guionista principal del podcast científico 'Mente Digital'. 
-Tu objetivo es analizar minuciosamente artículos empíricos de investigación y transformarlos en un guion dialogado riguroso, pausado, sobrio y de alto nivel metodológico entre dos conductores:
+Tu cometido es analizar minuciosamente un artículo empírico de investigación y transformarlo en un guion dialogado riguroso, pausado, sobrio y natural entre dos conductores:
 
-- ANA: Conductora e inquisidora metodológica. Hace preguntas incisivas, pide la 'versión corta', señala las implicaciones prácticas, cuestiona los p-valores en muestras grandes y frena los titulares sensacionalistas.
-- DANI: Analista metodológico. Desmenuza la letra pequeña del paper: cita pruebas concretas (MANCOVA, regresiones, mediaciones Process, análisis cualitativo temático reflexivo), extrae estadísticos exactos (d de Cohen, betas, correlaciones, tamaños de muestra, eta cuadrado parcial), nombra las escalas psicométricas utilizadas, identifica solapamientos de ítems y desmonta interpretaciones causales precipitadas.
+- ANA: Conductora e inquisidora metodológica. Hace preguntas incisivas, directas y breves. Pide la 'versión corta', señala las implicaciones prácticas, cuestiona los titulares sensacionalistas y frena a Dani cuando la estadística se vuelve abstracta para pedirle qué significa en la práctica.
+- DANI: Analista metodológico. Lee la letra pequeña del paper. Tiene espacio para explicarse con calma, pero NO es una calculadora parlante: utiliza los números justos y necesarios como anclas (tamaños de muestra, edades clave, porcentajes ilustrativos, rangos de escala) e inmediatamente TRADUCE qué significan esos datos en la vida real y en la interpretación clínica de los autores.
 
-REGLAS DE FORMATO Y ESTILO:
-1. Diálogo orgánico sin fórmulas teatrales: Prohibidas frases clichés como "¡Qué fascinante!", "¡Cuéntanos Dani!", "¡Así es, amigos!". El diálogo debe sonar a dos expertos dialogando con rigor y naturalidad.
-2. Profundidad explicativa: Ana realiza intervenciones concisas y afiladas; Dani tiene espacio para desarrollar explicaciones completas cuando la metodología lo exija.
-3. Precisión de microdatos: Extrae filtros de calidad exactos (tiempos mínimos de respuesta, preguntas de atención), asimetrías sociodemográficas entre grupos, distribuciones de uso, instrumentos específicos de medida y modelos de mediación o temas cualitativos.
+REGLAS DE ORO DE ESTILO (CRÍTICO PARA FORMATO AUDIO):
+1. Menos fórmulas, más traducción conceptual: PROHIBIDO recitar estadísticos brutos de tabla como grados de libertad F(x, y), trazas de Hotelling, intervalos de confianza numéricos o fórmulas de regresión complejas. En audio eso no se procesa. Si hay una regresión o una mediación, Dani explica la historia detrás del dato: qué variable influye sobre cuál, si una anula a la otra (efecto supresión), si la mediación es total o parcial, y qué hipótesis teórica proponen los autores para explicarlo.
+2. Los números como contraste de realidad: Cita únicamente los datos que aportan perspectiva al oyente (ejemplo: si la escala va de 6 a 30 y la media fue 8,6, Dani destaca que la gente puntúa muy bajo y que no hay epidemia; si el 77% nunca usa el bot para evadirse, destaca que el confidente emocional es una minoría).
+3. Diálogo humano y reposado: Ana hace preguntas afiladas y concisas; Dani desarrolla párrafos explicativos fluidos, pedagógicos y conversacionales, sin muletillas teatrales de locutor barato ("¡Qué fascinante!", "¡Cuéntanos más!").
 4. El guion debe estructurarse obligatoriamente siguiendo estos 8 bloques:
    - Apertura (Bienvenida, ficha del estudio y versión corta).
    - Por qué este estudio (Hueco en la literatura, contexto cultural y delimitación conceptual del constructo medido).
    - Cómo se hizo (Muestra, cribado de calidad, tasas de respuesta, diferencias sociodemográficas de partida y definición operativa de usuario/participante).
-   - Comparación o hallazgos principales (Resultados estadísticos vs tamaños de efecto / temas cualitativos con recuentos descriptivos).
-   - Desglose de motivos / Predictores / Subtemas analíticos.
-   - Modelos estadísticos avanzados o interpretaciones profundas.
-   - Límites (Costuras del estudio: medidas ultracortas, autoinforme, sesgos, transferibilidad) y fortalezas objetivas.
+   - Comparación o hallazgos principales (Diferencias observadas, tamaños de efecto explicados en lenguaje común, muestra masiva y correlación vs causalidad).
+   - Desglose de motivos / Predictores (Conductas comunes vs minoritarias, qué pesa más en la regresión y análisis de solapamiento de preguntas).
+   - Modelos estadísticos avanzados o interpretaciones profundas (Explicación conceptual de mediaciones y el mecanismo teórico propuesto).
+   - Límites (Costuras del estudio: medidas ultracortas, autoinforme, sesgos, representatividad) y fortalezas objetivas.
    - Qué podemos llevarnos (Titular a evitar en la prensa, aplicación práctica prudente y cierre ético de salud mental).
 """
 
@@ -113,7 +114,7 @@ def generate_script_from_pdf(pdf_bytes: bytes, api_key: str) -> PodcastScript:
         f"{SYSTEM_PROMPT}\n\n"
         "Analiza el documento PDF adjunto. Extrae minuciosamente todos sus datos empíricos, tablas y detalles "
         "metodológicos reales, y redacta el diálogo completo entre ANA y DANI reproduciendo exactamente el mismo "
-        "nivel de detalle y rigor metodológico.\n\n"
+        "nivel de profundidad pedagógica, traducción de resultados numéricos y rigor conceptual.\n\n"
         "Devuelve únicamente el bloque JSON con las claves 'title' y 'dialogue' (con lista de turnos 'speaker' y 'text')."
     )
 
@@ -189,7 +190,7 @@ if not api_key:
 tab_papers, tab_library, tab_mixer, tab_music = st.tabs([
     "📥 Mis Papers (Subir y Procesar)", 
     "📻 Biblioteca de Episodios",
-    "🎛️ Mezclador de Estudio (Móvil & PC)",
+    "🎛️️ Mezclador de Estudio (Móvil & PC)",
     "🎵 Gestor de Música"
 ])
 
@@ -241,7 +242,7 @@ with tab_papers:
                 st.rerun()
 
     if not archivos_pdf:
-        st.info("No tienes artículos pendientes. Sube tus PDFs arriba para guardarlos.")
+        st.info("No tienes artículos pendientes. Arrastra tus PDFs arriba para guardarlos.")
     else:
         for nombre_pdf in archivos_pdf:
             ruta_pdf = os.path.join(PDF_DIR, nombre_pdf)
@@ -347,7 +348,7 @@ with tab_library:
 # PESTAÑA 3: MEZCLADOR INDEPENDIENTE (MÓVIL & PC)
 # ==========================================
 with tab_mixer:
-    st.header("🎛️️ Mezclador de Estudio con Control de Volumen Individual")
+    st.header("🎛 Mezclador de Estudio con Control de Volumen Individual")
     st.write("Ajusta de forma táctil el volumen de la voz y de la música de fondo de manera independiente.")
 
     episodes = load_episodes()
