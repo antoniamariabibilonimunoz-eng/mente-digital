@@ -449,5 +449,104 @@ with tab_mixer:
             with open(track_audio_file, "rb") as f_bg:
                 b64_music = base64.b64encode(f_bg.read()).decode()
 
-            mixer_html = f"""
-            <div style="background-color: #1a1c24; padding: 20px; border-radius: 12px; color: #ffffff; font-
+            template_html = """
+            <div style="background-color: #1a1c24; padding: 20px; border-radius: 12px; color: #ffffff; font-family: sans-serif;">
+                <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                    <button id="btnPlayAll" style="flex: 1; padding: 14px; font-size: 16px; font-weight: bold; background-color: #00c853; color: white; border: none; border-radius: 8px; cursor: pointer;">▶ Reproducir Ambos</button>
+                    <button id="btnPauseAll" style="flex: 1; padding: 14px; font-size: 16px; font-weight: bold; background-color: #d50000; color: white; border: none; border-radius: 8px; cursor: pointer;">⏸ Pausar</button>
+                    <button id="btnRestartAll" style="flex: 0.6; padding: 14px; font-size: 16px; font-weight: bold; background-color: #424242; color: white; border: none; border-radius: 8px; cursor: pointer;">⏮ Inicio</button>
+                </div>
+
+                <div style="background: #262936; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span style="font-weight: bold;">🎙️ Volumen Podcast (Voz)</span>
+                        <span id="txtPodVol" style="color: #00e5ff;">100%</span>
+                    </div>
+                    <input type="range" id="sliderPod" min="0" max="1" step="0.01" value="1.0" style="width: 100%; height: 10px; accent-color: #00e5ff; cursor: pointer;">
+                    <audio id="audioPodcast" src="data:audio/mp3;base64,__B64_PODCAST__" controls style="width: 100%; margin-top: 10px;"></audio>
+                </div>
+
+                <div style="background: #262936; padding: 15px; border-radius: 8px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span style="font-weight: bold;">🎵 Volumen Música de Fondo</span>
+                        <span id="txtBgVol" style="color: #ff4081;">20%</span>
+                    </div>
+                    <input type="range" id="sliderBg" min="0" max="1" step="0.01" value="0.20" style="width: 100%; height: 10px; accent-color: #ff4081; cursor: pointer;">
+                    <audio id="audioMusic" src="data:audio/mp3;base64,__B64_MUSIC__" loop controls style="width: 100%; margin-top: 10px;"></audio>
+                </div>
+            </div>
+
+            <script>
+                const pod = document.getElementById('audioPodcast');
+                const bgm = document.getElementById('audioMusic');
+                const sPod = document.getElementById('sliderPod');
+                const sBg = document.getElementById('sliderBg');
+                const tPod = document.getElementById('txtPodVol');
+                const tBg = document.getElementById('txtBgVol');
+
+                pod.volume = 1.0;
+                bgm.volume = 0.20;
+
+                sPod.addEventListener('input', function(e) {
+                    pod.volume = parseFloat(e.target.value);
+                    tPod.innerText = Math.round(e.target.value * 100) + '%';
+                });
+
+                sBg.addEventListener('input', function(e) {
+                    bgm.volume = parseFloat(e.target.value);
+                    tBg.innerText = Math.round(e.target.value * 100) + '%';
+                });
+
+                document.getElementById('btnPlayAll').addEventListener('click', function() {
+                    pod.play();
+                    bgm.play();
+                });
+
+                document.getElementById('btnPauseAll').addEventListener('click', function() {
+                    pod.pause();
+                    bgm.pause();
+                });
+
+                document.getElementById('btnRestartAll').addEventListener('click', function() {
+                    pod.currentTime = 0;
+                    bgm.currentTime = 0;
+                    pod.play();
+                    bgm.play();
+                });
+            </script>
+            """
+            mixer_html = template_html.replace("__B64_PODCAST__", b64_podcast).replace("__B64_MUSIC__", b64_music)
+            components.html(mixer_html, height=430)
+
+# ==========================================
+# PESTAÑA 4: GESTOR DE MÚSICA
+# ==========================================
+with tab_music:
+    st.header("Pistas de Música de Fondo")
+    uploaded_music = st.file_uploader("Subir nueva pista MP3", type=["mp3"], key="uploader_music")
+    if uploaded_music is not None:
+        target_path = os.path.join(MUSIC_DIR, uploaded_music.name)
+        if not os.path.exists(target_path):
+            with open(target_path, "wb") as f:
+                f.write(uploaded_music.getbuffer())
+            st.success(f"Pista guardada: {uploaded_music.name}")
+            st.rerun()
+
+    st.subheader("Tu Colección Musical")
+    saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.lower().endswith(".mp3")]
+    
+    if saved_tracks:
+        for track in saved_tracks:
+            track_path = os.path.join(MUSIC_DIR, track)
+            col_info, col_player, col_del = st.columns([2, 3, 1])
+            with col_info:
+                st.write(f"🎵 **{track}**")
+            with col_player:
+                st.audio(track_path, format="audio/mp3")
+            with col_del:
+                if st.button("🗑️", key=f"del_track_{track}"):
+                    delete_music(track_path)
+                    st.rerun()
+            st.divider()
+    else:
+        st.info("No hay pistas de música subidas.")
