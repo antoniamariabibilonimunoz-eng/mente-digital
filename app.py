@@ -24,37 +24,39 @@ MUSIC_DIR = os.path.join(DATA_DIR, "music")
 for d in [PDF_DIR, AUDIO_DIR, MUSIC_DIR]:
     os.makedirs(d, exist_ok=True)
 
-def get_db():
-    conn = sqlite3.connect(os.path.join(DATA_DIR, "library.db"))
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS uploaded_papers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            filename TEXT,
-            filepath TEXT,
-            upload_date TEXT,
-            status TEXT DEFAULT 'pending'
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS episodes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
-            date TEXT,
-            pdf_path TEXT,
-            audio_path TEXT,
-            transcript_json TEXT
-        )
-    """)
-    conn.commit()
-    return conn
+DB_PATH = os.path.join(DATA_DIR, "library.db")
+
+def init_db():
+    with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS uploaded_papers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT,
+                filepath TEXT,
+                upload_date TEXT,
+                status TEXT DEFAULT 'pending'
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS episodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT,
+                date TEXT,
+                pdf_path TEXT,
+                audio_path TEXT,
+                transcript_json TEXT
+            )
+        """)
+        conn.commit()
+
+init_db()
 
 def delete_uploaded_paper(paper_id: int, filepath: str):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("DELETE FROM uploaded_papers WHERE id = ?", (paper_id,))
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM uploaded_papers WHERE id = ?", (paper_id,))
+        conn.commit()
     if os.path.exists(filepath):
         try:
             os.remove(filepath)
@@ -62,13 +64,16 @@ def delete_uploaded_paper(paper_id: int, filepath: str):
             pass
 
 def clear_all_uploaded_papers():
-    conn = get_db()
-    c = conn.cursor()
-    papers = c.execute("SELECT filepath FROM uploaded_papers").fetchall()
-    c.execute("DELETE FROM uploaded_papers")
-    conn.commit()
-    conn.close()
-    for (p_path,) in papers:
+    papers_to_remove = []
+    with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+        c = conn.cursor()
+        c.execute("SELECT filepath FROM uploaded_papers")
+        rows = c.fetchall()
+        papers_to_remove = [r[0] for r in rows]
+        c.execute("DELETE FROM uploaded_papers")
+        conn.commit()
+        
+    for p_path in papers_to_remove:
         if os.path.exists(p_path):
             try:
                 os.remove(p_path)
@@ -76,11 +81,10 @@ def clear_all_uploaded_papers():
                 pass
 
 def delete_episode(ep_id: int, pdf_path: str, audio_path: str):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("DELETE FROM episodes WHERE id = ?", (ep_id,))
-    conn.commit()
-    conn.close()
+    with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+        c = conn.cursor()
+        c.execute("DELETE FROM episodes WHERE id = ?", (ep_id,))
+        conn.commit()
     if os.path.exists(pdf_path):
         try:
             os.remove(pdf_path)
@@ -200,7 +204,10 @@ async def create_audio(dialogue: List[DialogueTurn], output_file: str):
     finally:
         for tf in temp_files:
             if os.path.exists(tf):
-                os.remove(tf)
+                try:
+                    os.remove(tf)
+                except Exception:
+                    pass
 
 # --- RECUPERAR API KEY ---
 api_key = None
@@ -222,7 +229,7 @@ tab_papers, tab_library, tab_mixer, tab_music = st.tabs([
 ])
 
 # ==========================================
-# PESTAÑA 1: GESTOR DE PAPERS (SUBIDA MÚLTIPLE Y ELIMINACIÓN)
+# PESTAÑA 1: GESTOR DE PAPERS
 # ==========================================
 with tab_papers:
     st.header("Almacén de Artículos Científicos")
@@ -230,7 +237,7 @@ with tab_papers:
     if not api_key:
         st.error("No se detectó 'GEMINI_API_KEY' en los Secrets de Streamlit.")
 
-    st.write("Selecciona uno o varios PDFs y haz clic en **Guardar en Almacén** para dejarlos listos y procesarlos cuando quieras.")
+    st.write("Selecciona uno o varios PDFs y haz clic en **Guardar en Almacén** para dejarlos listos.")
     
     uploaded_files = st.file_uploader(
         "Arrastra o selecciona tus archivos PDF", 
@@ -241,26 +248,26 @@ with tab_papers:
 
     if uploaded_files:
         if st.button("💾 Guardar Archivos Seleccionados en Almacén", type="primary"):
-            conn = get_db()
-            c = conn.cursor()
             saved_count = 0
-            for uploaded_file in uploaded_files:
-                existing = c.execute("SELECT id FROM uploaded_papers WHERE filename = ?", (uploaded_file.name,)).fetchone()
-                if not existing:
-                    timestamp = int(time.time() * 1000)
-                    safe_name = f"{timestamp}_{uploaded_file.name}"
-                    pdf_path = os.path.join(PDF_DIR, safe_name)
-                    
-                    with open(pdf_path, "wb") as f:
-                        f.write(uploaded_file.getbuffer())
+            with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+                c = conn.cursor()
+                for uploaded_file in uploaded_files:
+                    c.execute("SELECT id FROM uploaded_papers WHERE filename = ?", (uploaded_file.name,))
+                    existing = c.fetchone()
+                    if not existing:
+                        timestamp = int(time.time() * 1000)
+                        safe_name = f"{timestamp}_{uploaded_file.name}"
+                        pdf_path = os.path.join(PDF_DIR, safe_name)
                         
-                    c.execute("""
-                        INSERT INTO uploaded_papers (filename, filepath, upload_date, status)
-                        VALUES (?, ?, ?, ?)
-                    """, (uploaded_file.name, pdf_path, datetime.now().strftime("%Y-%m-%d %H:%M"), "ready"))
-                    saved_count += 1
-            conn.commit()
-            conn.close()
+                        with open(pdf_path, "wb") as f:
+                            f.write(uploaded_file.getbuffer())
+                            
+                        c.execute("""
+                            INSERT INTO uploaded_papers (filename, filepath, upload_date, status)
+                            VALUES (?, ?, ?, ?)
+                        """, (uploaded_file.name, pdf_path, datetime.now().strftime("%Y-%m-%d %H:%M"), "ready"))
+                        saved_count += 1
+                conn.commit()
             if saved_count > 0:
                 st.success(f"Se han guardado {saved_count} artículo(s) en tu almacén.")
             else:
@@ -269,9 +276,10 @@ with tab_papers:
 
     st.divider()
     
-    conn = get_db()
-    papers = conn.execute("SELECT id, filename, filepath, upload_date FROM uploaded_papers ORDER BY id DESC").fetchall()
-    conn.close()
+    with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+        c = conn.cursor()
+        c.execute("SELECT id, filename, filepath, upload_date FROM uploaded_papers ORDER BY id DESC")
+        papers = c.fetchall()
 
     col_title_papers, col_clear_papers = st.columns([4, 1.5])
     with col_title_papers:
@@ -309,20 +317,19 @@ with tab_papers:
                                     audio_save_path = os.path.join(AUDIO_DIR, audio_filename)
                                     asyncio.run(create_audio(script_obj.dialogue, audio_save_path))
 
-                                conn = get_db()
-                                c = conn.cursor()
-                                c.execute("""
-                                    INSERT INTO episodes (title, date, pdf_path, audio_path, transcript_json)
-                                    VALUES (?, ?, ?, ?, ?)
-                                """, (
-                                    script_obj.title,
-                                    datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                    p_path,
-                                    audio_save_path,
-                                    script_obj.model_dump_json()
-                                ))
-                                conn.commit()
-                                conn.close()
+                                with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+                                    c = conn.cursor()
+                                    c.execute("""
+                                        INSERT INTO episodes (title, date, pdf_path, audio_path, transcript_json)
+                                        VALUES (?, ?, ?, ?, ?)
+                                    """, (
+                                        script_obj.title,
+                                        datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                        p_path,
+                                        audio_save_path,
+                                        script_obj.model_dump_json()
+                                    ))
+                                    conn.commit()
 
                                 st.success(f"¡Episodio '{script_obj.title}' creado con éxito!")
                                 st.audio(audio_save_path, format="audio/mp3")
@@ -340,9 +347,10 @@ with tab_papers:
 # ==========================================
 with tab_library:
     st.header("Episodios Generados")
-    conn = get_db()
-    episodes = conn.execute("SELECT id, title, date, pdf_path, audio_path, transcript_json FROM episodes ORDER BY id DESC").fetchall()
-    conn.close()
+    with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+        c = conn.cursor()
+        c.execute("SELECT id, title, date, pdf_path, audio_path, transcript_json FROM episodes ORDER BY id DESC")
+        episodes = c.fetchall()
 
     if not episodes:
         st.info("Aún no tienes episodios guardados en la biblioteca.")
@@ -393,9 +401,10 @@ with tab_mixer:
     st.header("🎛️ Mezclador de Estudio con Control de Volumen Individual")
     st.write("Ajusta de forma táctil el volumen de la voz y de la música de fondo de manera independiente.")
 
-    conn = get_db()
-    episodes = conn.execute("SELECT id, title, audio_path FROM episodes ORDER BY id DESC").fetchall()
-    conn.close()
+    with sqlite3.connect(DB_PATH, timeout=30.0) as conn:
+        c = conn.cursor()
+        c.execute("SELECT id, title, audio_path FROM episodes ORDER BY id DESC")
+        episodes = c.fetchall()
 
     saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.lower().endswith(".mp3")]
 
