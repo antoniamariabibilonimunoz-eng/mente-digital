@@ -3,6 +3,7 @@ import fitz  # PyMuPDF
 import json
 import asyncio
 import edge_tts
+import time
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
@@ -40,7 +41,7 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
 
 def generate_script(pdf_text: str, api_key: str) -> PodcastScript:
     client = genai.Client(api_key=api_key.strip())
-    cleaned = pdf_text[:100000]
+    cleaned = pdf_text[:80000]
     
     prompt = f"""
 {SYSTEM_PROMPT}
@@ -53,25 +54,43 @@ Genera el guion estructurado estrictamente en formato JSON con las claves:
 - "dialogue": lista de objetos con "speaker" ("ANA" o "DANI") y "text" (su intervención).
 No incluyas explicaciones adicionales, devuelve únicamente el bloque JSON.
 """
-    response = client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.3,
-        ),
-    )
-    
-    raw_text = response.text.strip()
-    if raw_text.startswith("```json"):
-        raw_text = raw_text[7:]
-    if raw_text.startswith("```"):
-        raw_text = raw_text[3:]
-    if raw_text.endswith("```"):
-        raw_text = raw_text[:-3]
-    
-    script_dict = json.loads(raw_text.strip())
-    return PodcastScript(**script_dict)
+    # Lista de modelos: si 3.8 está saturado (503), recurre a 3.5-flash-lite
+    candidate_models = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
+    last_error = None
+
+    for model_name in candidate_models:
+        # Hasta 3 reintentos por modelo ante picos de demanda (503)
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.3,
+                    ),
+                )
+                raw_text = response.text.strip()
+                if raw_text.startswith("```json"):
+                    raw_text = raw_text[7:]
+                if raw_text.startswith("```"):
+                    raw_text = raw_text[3:]
+                if raw_text.endswith("```"):
+                    raw_text = raw_text[:-3]
+                
+                script_dict = json.loads(raw_text.strip())
+                return PodcastScript(**script_dict)
+
+            except Exception as e:
+                last_error = e
+                # Si es saturación (503 UNAVAILABLE), esperar brevemente y reintentar
+                if "503" in str(e) or "UNAVAILABLE" in str(e):
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                else:
+                    break
+
+    raise last_error
 
 async def create_audio(dialogue: List[DialogueTurn], output_file: str):
     temp_files = []
