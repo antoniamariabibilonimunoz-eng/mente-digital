@@ -7,12 +7,18 @@ import time
 import os
 import base64
 from datetime import datetime
-from google import genai
-from google.genai import types
 from pydantic import BaseModel, Field
 from typing import List
 
+# Debe ser la primera instrucción de Streamlit
 st.set_page_config(page_title="Mente Digital", layout="wide", page_icon="🎙")
+
+# Importación segura de Google GenAI
+try:
+    from google import genai
+    from google.genai import types
+except ImportError:
+    st.error("Instalando dependencias de Google GenAI... Si el error persiste, revisa requirements.txt.")
 
 # --- DIRECTORIOS LOCALES ---
 DATA_DIR = "library_data"
@@ -22,9 +28,12 @@ MUSIC_DIR = os.path.join(DATA_DIR, "music")
 INDEX_FILE = os.path.join(DATA_DIR, "library_index.json")
 
 for d in [DATA_DIR, PDF_DIR, AUDIO_DIR, MUSIC_DIR]:
-    os.makedirs(d, exist_ok=True)
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
 
-# --- ALMACENAMIENTO SEGURO EN JSON (SIN BLOQUEOS DE SQLITE) ---
+# --- MANEJO DE METADATOS EN JSON (SIN BLOQUEOS) ---
 def load_episodes() -> list:
     if not os.path.exists(INDEX_FILE):
         return []
@@ -35,10 +44,13 @@ def load_episodes() -> list:
         return []
 
 def save_episodes(episodes: list):
-    temp_file = INDEX_FILE + ".tmp"
-    with open(temp_file, "w", encoding="utf-8") as f:
-        json.dump(episodes, f, ensure_ascii=False, indent=2)
-    os.replace(temp_file, INDEX_FILE)
+    try:
+        temp_file = INDEX_FILE + ".tmp"
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(episodes, f, ensure_ascii=False, indent=2)
+        os.replace(temp_file, INDEX_FILE)
+    except Exception as e:
+        st.error(f"Error guardando biblioteca: {e}")
 
 def add_episode_record(title: str, pdf_path: str, audio_path: str, transcript_json: str):
     episodes = load_episodes()
@@ -165,7 +177,7 @@ async def create_audio(dialogue: List[DialogueTurn], output_file: str):
                 except Exception:
                     pass
 
-# --- RECUPERAR API KEY ---
+# --- API KEY ---
 api_key = None
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -191,13 +203,13 @@ with tab_papers:
     st.header("Almacén de Artículos Científicos")
     
     if not api_key:
-        st.error("No se detectó 'GEMINI_API_KEY' en los Secrets de Streamlit.")
+        st.warning("Configura tu 'GEMINI_API_KEY' en los Secrets de Streamlit.")
 
     uploaded_files = st.file_uploader(
         "Sube uno o varios archivos PDF", 
         type=["pdf"], 
         accept_multiple_files=True, 
-        key="pdf_uploader_files"
+        key="pdf_uploader_main"
     )
 
     if uploaded_files:
@@ -213,14 +225,16 @@ with tab_papers:
 
     st.divider()
 
-    archivos_pdf = [f for f in os.listdir(PDF_DIR) if f.lower().endswith(".pdf")]
+    archivos_pdf = []
+    if os.path.exists(PDF_DIR):
+        archivos_pdf = [f for f in os.listdir(PDF_DIR) if f.lower().endswith(".pdf")]
 
     col_tit, col_btn_vaciar = st.columns([4, 1.5])
     with col_tit:
         st.subheader("📚 Artículos Listos para Procesar")
     with col_btn_vaciar:
         if archivos_pdf:
-            if st.button("🗑️ Vaciar Todo el Almacén", key="btn_vaciar_todos_pdfs"):
+            if st.button("🗑️ Vaciar Todo el Almacén", key="btn_vaciar_todos"):
                 for f in archivos_pdf:
                     try:
                         os.remove(os.path.join(PDF_DIR, f))
@@ -230,7 +244,7 @@ with tab_papers:
                 st.rerun()
 
     if not archivos_pdf:
-        st.info("No tienes artículos pendientes. Sube tus PDFs arriba para guardarlos.")
+        st.info("No tienes artículos pendientes. Arrastra tus PDFs arriba para guardarlos.")
     else:
         for nombre_pdf in archivos_pdf:
             ruta_pdf = os.path.join(PDF_DIR, nombre_pdf)
@@ -252,7 +266,6 @@ with tab_papers:
                                 audio_save_path = os.path.join(AUDIO_DIR, audio_filename)
                                 asyncio.run(create_audio(script_obj.dialogue, audio_save_path))
 
-                            # Guardado inmediato en índice JSON
                             add_episode_record(
                                 title=script_obj.title,
                                 pdf_path=ruta_pdf,
@@ -265,7 +278,7 @@ with tab_papers:
                         except Exception as e:
                             st.error(f"Error procesando {nombre_pdf}: {e}")
                 with col_borrar:
-                    if st.button("🗑️️", key=f"btn_del_{nombre_pdf}"):
+                    if st.button("🗑", key=f"btn_del_{nombre_pdf}"):
                         try:
                             os.remove(ruta_pdf)
                         except Exception:
@@ -297,7 +310,7 @@ with tab_library:
                     st.subheader(ep_title)
                     st.caption(f"Generado el: {ep_date}")
                 with col_del:
-                    if st.button("🗑️️ Eliminar", key=f"del_ep_{ep_id}"):
+                    if st.button("🗑 Eliminar", key=f"del_ep_{ep_id}"):
                         delete_episode_record(ep_id)
                         st.warning("Episodio eliminado.")
                         st.rerun()
@@ -340,7 +353,9 @@ with tab_mixer:
     st.write("Ajusta de forma táctil el volumen de la voz y de la música de fondo de manera independiente.")
 
     episodes = load_episodes()
-    saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.lower().endswith(".mp3")]
+    saved_tracks = []
+    if os.path.exists(MUSIC_DIR):
+        saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.lower().endswith(".mp3")]
 
     if not episodes:
         st.warning("No hay episodios generados. Genera uno primero en la pestaña 'Mis Papers'.")
@@ -444,7 +459,9 @@ with tab_music:
             st.rerun()
 
     st.subheader("Tu Colección Musical")
-    saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.lower().endswith(".mp3")]
+    saved_tracks = []
+    if os.path.exists(MUSIC_DIR):
+        saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.lower().endswith(".mp3")]
     
     if saved_tracks:
         for track in saved_tracks:
