@@ -27,7 +27,6 @@ for d in [PDF_DIR, AUDIO_DIR, MUSIC_DIR]:
 DB_PATH = os.path.join(DATA_DIR, "library.db")
 
 def get_db_connection():
-    # Modo WAL y timeout para máxima velocidad sin bloqueos
     conn = sqlite3.connect(DB_PATH, timeout=60.0)
     conn.execute("PRAGMA journal_mode=WAL;")
     return conn
@@ -55,13 +54,13 @@ def init_and_clean_db():
                 transcript_json TEXT
             )
         """)
-        # LIMPIEZA INICIAL: Vaciar PDFs atascados en cola para restaurar velocidad
+        # Purgar cola atascada para restablecer velocidad
         c.execute("DELETE FROM uploaded_papers")
         conn.commit()
     finally:
         conn.close()
 
-    # Purgar archivos PDF físicos huérfanos
+    # Eliminar PDFs huérfanos que saturaban el disco
     for fname in os.listdir(PDF_DIR):
         fpath = os.path.join(PDF_DIR, fname)
         if os.path.isfile(fpath) and fname.endswith(".pdf"):
@@ -70,7 +69,6 @@ def init_and_clean_db():
             except Exception:
                 pass
 
-# Ejecutar saneamiento de arranque
 init_and_clean_db()
 
 def delete_uploaded_paper(paper_id: int, filepath: str):
@@ -339,3 +337,230 @@ with tab_papers:
                                 pdf_bytes = f.read()
 
                             try:
+                                with st.spinner("1/2: Analizando artículo y tablas estadísticas..."):
+                                    script_obj = generate_script_from_pdf(pdf_bytes, api_key)
+                                
+                                with st.spinner("2/2: Sintetizando voces de Ana y Dani..."):
+                                    audio_filename = f"podcast_{int(time.time() * 1000)}.mp3"
+                                    audio_save_path = os.path.join(AUDIO_DIR, audio_filename)
+                                    asyncio.run(create_audio(script_obj.dialogue, audio_save_path))
+
+                                conn_ep = get_db_connection()
+                                try:
+                                    c_ep = conn_ep.cursor()
+                                    c_ep.execute("""
+                                        INSERT INTO episodes (title, date, pdf_path, audio_path, transcript_json)
+                                        VALUES (?, ?, ?, ?, ?)
+                                    """, (
+                                        script_obj.title,
+                                        datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                        p_path,
+                                        audio_save_path,
+                                        script_obj.model_dump_json()
+                                    ))
+                                    conn_ep.commit()
+                                finally:
+                                    conn_ep.close()
+
+                                st.success(f"¡Episodio '{script_obj.title}' creado! Revisa la 'Biblioteca de Episodios'.")
+                                st.audio(audio_save_path, format="audio/mp3")
+                            except Exception as e:
+                                st.error(f"Error procesando '{p_name}': {e}")
+                with col_del:
+                    if st.button("🗑️ Eliminar", key=f"btn_del_paper_{p_id}"):
+                        delete_uploaded_paper(p_id, p_path)
+                        st.info(f"Artículo '{p_name}' eliminado.")
+                        st.rerun()
+                st.divider()
+
+# ==========================================
+# PESTAÑA 2: BIBLIOTECA DE EPISODIOS
+# ==========================================
+with tab_library:
+    st.header("Episodios Generados")
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT id, title, date, pdf_path, audio_path, transcript_json FROM episodes ORDER BY id DESC")
+        episodes = c.fetchall()
+    finally:
+        conn.close()
+
+    if not episodes:
+        st.info("Aún no tienes episodios generados en la biblioteca.")
+    else:
+        for ep_id, ep_title, ep_date, ep_pdf, ep_audio, ep_json in episodes:
+            with st.container():
+                col_head, col_del = st.columns([5, 1])
+                with col_head:
+                    st.subheader(ep_title)
+                    st.caption(f"Generado el: {ep_date}")
+                with col_del:
+                    if st.button("🗑️ Eliminar", key=f"del_btn_{ep_id}"):
+                        delete_episode(ep_id, ep_pdf, ep_audio)
+                        st.warning("Episodio eliminado.")
+                        st.rerun()
+
+                if os.path.exists(ep_audio):
+                    st.audio(ep_audio, format="audio/mp3")
+                    with open(ep_audio, "rb") as af:
+                        st.download_button(
+                            label="⬇️ Descargar Episodio en MP3",
+                            data=af.read(),
+                            file_name=os.path.basename(ep_audio),
+                            mime="audio/mpeg",
+                            key=f"dl_audio_{ep_id}"
+                        )
+
+                with st.expander("📄 Ver Transcripción Completa"):
+                    dialogue_data = json.loads(ep_json)
+                    for turn in dialogue_data.get("dialogue", []):
+                        st.markdown(f"**{turn['speaker']}:** {turn['text']}")
+
+                if os.path.exists(ep_pdf):
+                    with open(ep_pdf, "rb") as pf:
+                        st.download_button(
+                            label="📑 Descargar Paper Original (PDF)",
+                            data=pf.read(),
+                            file_name=os.path.basename(ep_pdf),
+                            mime="application/pdf",
+                            key=f"dl_pdf_{ep_id}"
+                        )
+                st.divider()
+
+# ==========================================
+# PESTAÑA 3: MEZCLADOR INDEPENDIENTE (MÓVIL & PC)
+# ==========================================
+with tab_mixer:
+    st.header("🎛️ Mezclador de Estudio con Control de Volumen Individual")
+    st.write("Ajusta de forma táctil el volumen de la voz y de la música de fondo de manera independiente.")
+
+    conn = get_db_connection()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT id, title, audio_path FROM episodes ORDER BY id DESC")
+        episodes = c.fetchall()
+    finally:
+        conn.close()
+
+    saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.lower().endswith(".mp3")]
+
+    if not episodes:
+        st.warning("No hay episodios generados. Genera uno primero en la pestaña 'Mis Papers'.")
+    elif not saved_tracks:
+        st.warning("No hay pistas de música de fondo. Sube alguna en el 'Gestor de Música'.")
+    else:
+        ep_dict = {f"[{ep[0]}] {ep[1]}": ep[2] for ep in episodes}
+        selected_ep_label = st.selectbox("1. Selecciona el Episodio:", list(ep_dict.keys()), key="mix_ep")
+        selected_track = st.selectbox("2. Selecciona la Música de Fondo:", saved_tracks, key="mix_bgm")
+
+        ep_audio_file = ep_dict[selected_ep_label]
+        track_audio_file = os.path.join(MUSIC_DIR, selected_track)
+
+        if os.path.exists(ep_audio_file) and os.path.exists(track_audio_file):
+            with open(ep_audio_file, "rb") as f_ep:
+                b64_podcast = base64.b64encode(f_ep.read()).decode()
+            with open(track_audio_file, "rb") as f_bg:
+                b64_music = base64.b64encode(f_bg.read()).decode()
+
+            template_html = """
+            <div style="background-color: #1a1c24; padding: 20px; border-radius: 12px; color: #ffffff; font-family: sans-serif;">
+                <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                    <button id="btnPlayAll" style="flex: 1; padding: 14px; font-size: 16px; font-weight: bold; background-color: #00c853; color: white; border: none; border-radius: 8px; cursor: pointer;">▶ Reproducir Ambos</button>
+                    <button id="btnPauseAll" style="flex: 1; padding: 14px; font-size: 16px; font-weight: bold; background-color: #d50000; color: white; border: none; border-radius: 8px; cursor: pointer;">⏸ Pausar</button>
+                    <button id="btnRestartAll" style="flex: 0.6; padding: 14px; font-size: 16px; font-weight: bold; background-color: #424242; color: white; border: none; border-radius: 8px; cursor: pointer;">⏮ Inicio</button>
+                </div>
+
+                <div style="background: #262936; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span style="font-weight: bold;">🎙️ Volumen Podcast (Voz)</span>
+                        <span id="txtPodVol" style="color: #00e5ff;">100%</span>
+                    </div>
+                    <input type="range" id="sliderPod" min="0" max="1" step="0.01" value="1.0" style="width: 100%; height: 10px; accent-color: #00e5ff; cursor: pointer;">
+                    <audio id="audioPodcast" src="data:audio/mp3;base64,__B64_PODCAST__" controls style="width: 100%; margin-top: 10px;"></audio>
+                </div>
+
+                <div style="background: #262936; padding: 15px; border-radius: 8px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span style="font-weight: bold;">🎵 Volumen Música de Fondo</span>
+                        <span id="txtBgVol" style="color: #ff4081;">20%</span>
+                    </div>
+                    <input type="range" id="sliderBg" min="0" max="1" step="0.01" value="0.20" style="width: 100%; height: 10px; accent-color: #ff4081; cursor: pointer;">
+                    <audio id="audioMusic" src="data:audio/mp3;base64,__B64_MUSIC__" loop controls style="width: 100%; margin-top: 10px;"></audio>
+                </div>
+            </div>
+
+            <script>
+                const pod = document.getElementById('audioPodcast');
+                const bgm = document.getElementById('audioMusic');
+                const sPod = document.getElementById('sliderPod');
+                const sBg = document.getElementById('sliderBg');
+                const tPod = document.getElementById('txtPodVol');
+                const tBg = document.getElementById('txtBgVol');
+
+                pod.volume = 1.0;
+                bgm.volume = 0.20;
+
+                sPod.addEventListener('input', function(e) {
+                    pod.volume = parseFloat(e.target.value);
+                    tPod.innerText = Math.round(e.target.value * 100) + '%';
+                });
+
+                sBg.addEventListener('input', function(e) {
+                    bgm.volume = parseFloat(e.target.value);
+                    tBg.innerText = Math.round(e.target.value * 100) + '%';
+                });
+
+                document.getElementById('btnPlayAll').addEventListener('click', function() {
+                    pod.play();
+                    bgm.play();
+                });
+
+                document.getElementById('btnPauseAll').addEventListener('click', function() {
+                    pod.pause();
+                    bgm.pause();
+                });
+
+                document.getElementById('btnRestartAll').addEventListener('click', function() {
+                    pod.currentTime = 0;
+                    bgm.currentTime = 0;
+                    pod.play();
+                    bgm.play();
+                });
+            </script>
+            """
+            mixer_html = template_html.replace("__B64_PODCAST__", b64_podcast).replace("__B64_MUSIC__", b64_music)
+            components.html(mixer_html, height=430)
+
+# ==========================================
+# PESTAÑA 4: GESTOR DE MÚSICA
+# ==========================================
+with tab_music:
+    st.header("Pistas de Música de Fondo")
+    uploaded_music = st.file_uploader("Subir nueva pista MP3", type=["mp3"], key="uploader_music")
+    if uploaded_music is not None:
+        target_path = os.path.join(MUSIC_DIR, uploaded_music.name)
+        if not os.path.exists(target_path):
+            with open(target_path, "wb") as f:
+                f.write(uploaded_music.getbuffer())
+            st.success(f"Pista guardada: {uploaded_music.name}")
+            st.rerun()
+
+    st.subheader("Tu Colección Musical")
+    saved_tracks = [f for f in os.listdir(MUSIC_DIR) if f.lower().endswith(".mp3")]
+    
+    if saved_tracks:
+        for track in saved_tracks:
+            track_path = os.path.join(MUSIC_DIR, track)
+            col_info, col_player, col_del = st.columns([2, 3, 1])
+            with col_info:
+                st.write(f"🎵 **{track}**")
+            with col_player:
+                st.audio(track_path, format="audio/mp3")
+            with col_del:
+                if st.button("🗑️", key=f"del_track_{track}"):
+                    delete_music(track_path)
+                    st.rerun()
+            st.divider()
+    else:
+        st.info("No hay pistas de música subidas.")
