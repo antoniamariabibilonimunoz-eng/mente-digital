@@ -3,7 +3,8 @@ import fitz  # PyMuPDF
 import json
 import asyncio
 import edge_tts
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from pydantic import BaseModel, Field
 from typing import List
 import os
@@ -38,21 +39,9 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     return "\n".join([page.get_text() for page in doc])
 
 def generate_script(pdf_text: str, api_key: str) -> PodcastScript:
-    genai.configure(api_key=api_key.strip())
-    
-    # 1. Detectar automáticamente un modelo compatible con tu clave
-    available_models = [
-        m.name for m in genai.list_models() 
-        if "generateContent" in m.supported_generation_methods
-    ]
-    
-    if not available_models:
-        raise ValueError("No se encontraron modelos compatibles con esta clave API.")
-    
-    # Priorizar modelos flash o pro si existen en la lista, o tomar el primero disponible
-    chosen_model = next((m for m in available_models if "flash" in m), available_models[0])
-    
+    client = genai.Client(api_key=api_key.strip())
     cleaned = pdf_text[:100000]
+    
     prompt = f"""
 {SYSTEM_PROMPT}
 
@@ -64,8 +53,14 @@ Genera el guion estructurado estrictamente en formato JSON con las claves:
 - "dialogue": lista de objetos con "speaker" ("ANA" o "DANI") y "text" (su intervención).
 No incluyas explicaciones adicionales, devuelve únicamente el bloque JSON.
 """
-    model = genai.GenerativeModel(model_name=chosen_model)
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.3,
+        ),
+    )
     
     raw_text = response.text.strip()
     if raw_text.startswith("```json"):
@@ -155,7 +150,7 @@ music_file = st.file_uploader("Sube música de fondo opcional (MP3)", type=["mp3
 if st.session_state.audio_path and os.path.exists(st.session_state.audio_path):
     with open(st.session_state.audio_path, "rb") as f:
         audio_bytes = f.read()
-
+    
     st.write("**Audio del Podcast:**")
     st.audio(audio_bytes, format="audio/mp3")
     
