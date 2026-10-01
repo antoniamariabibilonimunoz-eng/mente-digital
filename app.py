@@ -3,8 +3,7 @@ import fitz  # PyMuPDF
 import json
 import asyncio
 import edge_tts
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from pydantic import BaseModel, Field
 from typing import List
 import os
@@ -39,19 +38,28 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     return "\n".join([page.get_text() for page in doc])
 
 def generate_script(pdf_text: str, api_key: str) -> PodcastScript:
-    client = genai.Client(api_key=api_key)
-    cleaned = pdf_text[:120000]
-    response = client.models.generate_content(
-        model="gemini-1.5-flash",
-        contents=f"Analiza este artículo y genera el guion para el podcast:\n\n{cleaned}",
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            response_mime_type="application/json",
-            response_schema=PodcastScript,
-            temperature=0.3,
-        ),
+    genai.configure(api_key=api_key.strip())
+    
+    cleaned = pdf_text[:100000]
+    prompt = f"""
+{SYSTEM_PROMPT}
+
+A continuación tienes el texto del artículo científico:
+{cleaned}
+
+Genera el guion estructurado estrictamente en formato JSON con las claves:
+- "title": (string)
+- "dialogue": lista de objetos con "speaker" ("ANA" o "DANI") y "text" (su intervención).
+No incluyas texto fuera del bloque JSON.
+"""
+    model = genai.GenerativeModel(
+        model_name="gemini-1.5-flash",
+        generation_config={"response_mime_type": "application/json"}
     )
-    return PodcastScript(**json.loads(response.text))
+    
+    response = model.generate_content(prompt)
+    script_dict = json.loads(response.text)
+    return PodcastScript(**script_dict)
 
 async def create_audio(dialogue: List[DialogueTurn], output_file: str):
     temp_files = []
@@ -77,11 +85,20 @@ async def create_audio(dialogue: List[DialogueTurn], output_file: str):
 st.title("🎙 Mente Digital")
 st.caption("Transforma artículos científicos en podcasts dialogados y rigurosos")
 
-# Lee la clave de Secrets de Streamlit o del entorno
-api_key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
+# 1. Recuperar API Key (desde Secrets o entrada manual)
+api_key = None
+try:
+    if "GEMINI_API_KEY" in st.secrets:
+        api_key = st.secrets["GEMINI_API_KEY"]
+except Exception:
+    pass
 
 if not api_key:
-    api_key = st.text_input("Ingresa tu Gemini API Key:", type="password")
+    api_key = os.getenv("GEMINI_API_KEY")
+
+user_key = st.text_input("Gemini API Key (déjalo vacío si ya lo pusiste en Secrets):", type="password")
+if user_key:
+    api_key = user_key
 
 pdf_file = st.file_uploader("Sube el artículo en PDF", type=["pdf"])
 
@@ -92,15 +109,21 @@ if "audio_path" not in st.session_state:
 
 if pdf_file and api_key:
     if st.button("Generar Podcast"):
-        with st.spinner("Leyendo artículo y redactando guion..."):
-            text = extract_text_from_pdf(pdf_file.read())
-            st.session_state.script = generate_script(text, api_key)
-        
-        with st.spinner("Sintetizando voces de Ana y Dani..."):
-            audio_path = "podcast_generado.mp3"
-            asyncio.run(create_audio(st.session_state.script.dialogue, audio_path))
-            st.session_state.audio_path = audio_path
-        st.success("¡Podcast generado con éxito!")
+        try:
+            with st.spinner("Leyendo artículo y redactando guion..."):
+                text = extract_text_from_pdf(pdf_file.read())
+                st.session_state.script = generate_script(text, api_key)
+            
+            with st.spinner("Sintetizando voces de Ana y Dani..."):
+                audio_path = "podcast_generado.mp3"
+                asyncio.run(create_audio(st.session_state.script.dialogue, audio_path))
+                st.session_state.audio_path = audio_path
+            st.success("¡Podcast generado con éxito!")
+        except Exception as e:
+            st.error(f"Error al procesar: {e}")
+
+elif not api_key:
+    st.warning("Por favor, introduce tu Gemini API Key arriba o configúrala en los Secrets.")
 
 if st.session_state.script:
     st.subheader(st.session_state.script.title)
